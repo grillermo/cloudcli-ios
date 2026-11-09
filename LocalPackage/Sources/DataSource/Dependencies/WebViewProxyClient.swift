@@ -7,6 +7,7 @@ public struct WebViewProxyClient: DependencyClient {
     public var url: @Sendable () async -> URL?
     public var load: @Sendable (URLRequest) async -> Void
     public var loadHTMLString: @Sendable (String, URL?) async -> Void
+    public var evaluateJavaScript: @Sendable (String) async -> Bool
     public var canGoBack: @Sendable () async -> Bool
     public var goBack: @Sendable () async -> Void
     public var canGoForward: @Sendable () async -> Bool
@@ -30,6 +31,12 @@ public struct WebViewProxyClient: DependencyClient {
             url: { await proxy().url },
             load: { await proxy().load(request: $0) },
             loadHTMLString: { await proxy().loadHTMLString($0, baseURL: $1) },
+            evaluateJavaScript: { script in
+                // The result is not Sendable, so it is reduced to a Bool on the main actor.
+                await Task { @MainActor in
+                    ((try? await proxy().evaluateJavaScript(script)) as? Bool) ?? false
+                }.value
+            },
             canGoBack: { await proxy().canGoBack },
             goBack: { await proxy().goBack() },
             canGoForward: { await proxy().canGoForward },
@@ -42,6 +49,7 @@ public struct WebViewProxyClient: DependencyClient {
         url: { nil },
         load: { _ in },
         loadHTMLString: { _, _ in },
+        evaluateJavaScript: { _ in false },
         canGoBack: { false },
         goBack: {},
         canGoForward: { false },

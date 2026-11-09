@@ -1,3 +1,4 @@
+import DataSource
 import Model
 import SwiftUI
 import WebUI
@@ -5,6 +6,11 @@ import WebUI
 struct BrowserView: View {
     @Environment(\.browserToolbarLayout) private var browserToolbarLayout
     @StateObject var store: Browser
+    let services: AppServices
+    @Environment(\.scenePhase) private var scenePhase
+    // A notification tapped with the app closed arrives before any build has
+    // loaded, and the first load of the root would otherwise replace it.
+    @State private var pendingOpenURL: URL?
 
     private var ignoredContainerSafeAreaEdges: Edge.Set {
         if !store.isPresentedToolbar {
@@ -27,7 +33,7 @@ struct BrowserView: View {
                                 .environment(\.isLoading, proxy.isLoading)
                                 .environment(\.estimatedProgress, proxy.estimatedProgress)
                         }
-                        WebView(configuration: .forTelescopure)
+                        WebView(configuration: services.webViewConfiguration)
                             .navigationDelegate(store.navigationDelegate)
                             .uiDelegate(store.uiDelegate)
                             .refreshable()
@@ -36,7 +42,11 @@ struct BrowserView: View {
                             .allowsInspectable(true)
                             .pageScaleFactor(store.pageScale.value)
                             .overlay {
-                                if proxy.url == nil {
+                                if services.updater.needsFirstDownload {
+                                    FirstDownloadView(isChecking: services.updater.isChecking) {
+                                        Task { await services.updater.check() }
+                                    }
+                                } else if proxy.url == nil {
                                     LogoView()
                                 }
                             }
@@ -72,10 +82,27 @@ struct BrowserView: View {
                         .init(getResourceURL: { Bundle.module.url(forResource: $0, withExtension: $1) }),
                         proxy
                     ))
+                    services.dictation.loadPending()
+                    await services.updater.launch()
                 }
                 .onChange(of: proxy.url) { _, newValue in
                     Task {
                         await store.send(.onChangeURL(newValue))
+                    }
+                }
+                .onChange(of: services.updater.loadNonce) { _, _ in
+                    proxy.load(request: URLRequest(url: AppScheme.root))
+                    if let url = pendingOpenURL {
+                        pendingOpenURL = nil
+                        Task { await store.send(.onOpenURL(url)) }
+                    }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .background {
+                        // A recording must not be lost when the app leaves the screen.
+                        Task { await services.dictation.interrupted() }
+                    } else if phase == .active {
+                        Task { await services.updater.check() }
                     }
                 }
                 .onChange(of: proxy.title) { _, newValue in
@@ -92,6 +119,9 @@ struct BrowserView: View {
         }
         .ignoresSafeArea(.container, edges: store.isPresentedToolbar || browserToolbarLayout.usesSystemToolbar ? [] : .all)
         .ignoresSafeArea(.keyboard, edges: .bottom)
+        .overlay {
+            WrapperOverlay(services: services, isToolbarVisible: store.isPresentedToolbar)
+        }
         .sheet(item: $store.settings) { store in
             SettingsView(store: store)
         }
@@ -114,6 +144,10 @@ struct BrowserView: View {
             actions: {}
         )
         .onOpenURL { url in
+            if services.updater.loadNonce == 0 {
+                pendingOpenURL = url
+                return
+            }
             Task {
                 await store.send(.onOpenURL(url))
             }
@@ -127,5 +161,5 @@ extension BrowserNavigation: ObservableObject {}
 extension BrowserUI: ObservableObject {}
 
 #Preview(traits: .landscapeRight) {
-    BrowserView(store: .init(.testDependencies()))
+    BrowserView(store: .init(.testDependencies()), services: AppServices(webViewProxyClient: .testValue))
 }
