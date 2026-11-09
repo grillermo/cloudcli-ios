@@ -73,4 +73,9 @@ public final class BrowserNavigationDelegate: NSObject, WKNavigationDelegate, Ob
             await store.didFail(error: error)
         }
     }
+
+    public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        webView.reload()
+    }
 }
+

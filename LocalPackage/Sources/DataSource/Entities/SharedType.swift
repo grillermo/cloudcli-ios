@@ -23,9 +23,9 @@ public enum SharedType: Equatable {
             nil
         case let .link(url):
             // url is already percent-encoded.
-            URL(string: "telescopure://?link=\(url.absoluteString)")
+            URL(string: "cloudcli://?link=\(url.absoluteString)")
         case let .plainText(text):
-            URLComponents(string: "telescopure://?plaintext=\(text)")?.url
+            URLComponents(string: "cloudcli://?plaintext=\(text)")?.url
         }
     }
 

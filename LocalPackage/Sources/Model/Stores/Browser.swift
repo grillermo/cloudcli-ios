@@ -32,7 +32,6 @@ import WebUI
     public let navigationDelegate: BrowserNavigationDelegate
     public let uiDelegate: BrowserUIDelegate
     public var settings: Settings?
-    public var bookmarkManagement: BookmarkManagement?
 
     public let action: (Action) async -> Void
 
@@ -56,7 +55,6 @@ import WebUI
         browserNavigation: BrowserNavigation? = nil,
         browserUI: BrowserUI? = nil,
         settings: Settings? = nil,
-        bookmarkManagement: BookmarkManagement? = nil,
         action: @escaping (Action) async -> Void = { _ in }
     ) {
         self.appStateClient = appDependencies.appStateClient
@@ -90,7 +88,6 @@ import WebUI
         })
         self.uiDelegate = .init(store: browserUI)
         self.settings = settings
-        self.bookmarkManagement = bookmarkManagement
         self.action = action
         weakSelf = self
     }
@@ -116,7 +113,13 @@ import WebUI
             switch components.scheme {
             case "http", "https":
                 await webViewProxyClient.load(URLRequest(url: url))
-            case "telescopure":
+            case "cloudcli":
+                if url.host() == "session" {
+                    let encoded = url.path(percentEncoded: true)
+                    guard let target = URL(string: "cloudcli://app/session\(encoded)") else { return }
+                    await webViewProxyClient.load(URLRequest(url: target))
+                    return
+                }
                 guard let queryItem = components.queryItems?.first else { return }
                 if queryItem.name == "link", var link = queryItem.value {
                     if let fragment = url.fragment {
@@ -176,17 +179,6 @@ import WebUI
                 await webViewProxyClient.goForward()
             }
 
-        case let .bookmarkButtonTapped(appDependencies):
-            bookmarkManagement = .init(
-                appDependencies,
-                id: uuidClient.create(),
-                currentURL: currentURL,
-                currentTitle: currentTitle,
-                action: { [weak self] in
-                    await self?.send(.bookmarkManagement($0))
-                }
-            )
-
         case .hideToolbarButtonTapped:
             withAnimation(.easeIn(duration: 0.2)) {
                 isPresentedToolbar = false
@@ -234,6 +226,10 @@ import WebUI
                 appStateClient.send(\.actionPolicySubject, input: .cancel)
                 return
             }
+            if requestURL.scheme == "cloudcli", requestURL.host() == "app" {
+                appStateClient.send(\.actionPolicySubject, input: .allow)
+                return
+            }
             guard ["http", "https", "blob", "file", "about"].contains(requestURL.scheme) else {
                 appStateClient.send(\.actionPolicySubject, input: .cancel)
                 customSchemeURL = requestURL
@@ -271,36 +267,12 @@ import WebUI
 
         case .settings:
             break
-
-        case let .bookmarkManagement(.bookmarkItem(.openBookmarkButtonTapped(url))):
-            bookmarkManagement = nil
-            await webViewProxyClient.load(URLRequest(url: url))
-
-        case .bookmarkManagement(.doneButtonTapped):
-            bookmarkManagement = nil
-
-        case .bookmarkManagement:
-            break
         }
     }
 
     private func search(with text: String) async {
-        let searchEngine = userDefaultsRepository.searchEngine ?? .google
-        let url: URL? = if text.isEmpty {
-            URL(string: searchEngine.url)
-        } else if let url = URLComponents(string: text)?.url, let scheme = url.scheme {
-            switch scheme.lowercased() {
-            case "http", "https":
-                URL(string: text)
-            default:
-                url
-            }
-        } else {
-            URLComponents(string: searchEngine.urlWithQuery(keywords: text))?.url
-        }
-        if let url {
-            await webViewProxyClient.load(URLRequest(url: url))
-        }
+        guard let url = URLComponents(string: text)?.url, url.scheme != nil else { return }
+        await webViewProxyClient.load(URLRequest(url: url))
     }
 
     private func loadErrorPage(with error: any Error) async {
@@ -339,7 +311,6 @@ import WebUI
         case zoomButtonTapped(PageZoomCommand)
         case goBackButtonTapped
         case goForwardButtonTapped
-        case bookmarkButtonTapped(AppDependencies)
         case hideToolbarButtonTapped
         case showToolbarButtonTapped
         case dialogOKButtonTapped
@@ -349,7 +320,6 @@ import WebUI
         case browserNavigation(BrowserNavigation.Action)
         case browserUI(BrowserUI.Action)
         case settings(Settings.Action)
-        case bookmarkManagement(BookmarkManagement.Action)
 
         public struct EventBridge: Sendable {
             public var getResourceURL: (@MainActor @Sendable (String, String) -> URL?)?

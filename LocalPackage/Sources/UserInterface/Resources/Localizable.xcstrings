@@ -1,50 +1,6 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "addBookmark" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Add Currently Page"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "閲覧中のページを追加する"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "현재 페이지 추가"
-          }
-        }
-      }
-    },
-    "bookmarks" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bookmarks"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ブックマーク"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "북마크"
-          }
-        }
-      }
-    },
     "cache" : {
       "localizations" : {
         "en" : {
@@ -107,28 +63,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "지우기"
-          }
-        }
-      }
-    },
-    "defaultBrowserApp" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Default Browser App"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "デフォルトのブラウザアプリ"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "기본 브라우저 앱"
           }
         }
       }
@@ -217,28 +151,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "편집"
-          }
-        }
-      }
-    },
-    "editBookmark" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Edit Bookmark"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ブックマークを編集"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "북마크 편집"
           }
         }
       }
@@ -419,28 +331,6 @@
         }
       }
     },
-    "noBookmark" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "No Bookmark"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ブックマークなし"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "북마크 없음"
-          }
-        }
-      }
-    },
     "ok" : {
       "localizations" : {
         "en" : {
@@ -481,28 +371,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "열기"
-          }
-        }
-      }
-    },
-    "openBookmarks" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Open Bookmarks"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ブックマークを開く"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "북마크 열기"
           }
         }
       }
@@ -657,28 +525,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "검색..."
-          }
-        }
-      }
-    },
-    "searchEngine" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Search Engine"
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "検索エンジン"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "검색 엔진"
           }
         }
       }

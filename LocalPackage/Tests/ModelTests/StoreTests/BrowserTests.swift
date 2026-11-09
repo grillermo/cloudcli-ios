@@ -26,12 +26,6 @@ struct BrowserTests {
     func send_onOpenURL_https_scheme() async {
         let request = OSAllocatedUnfairLock<URLRequest?>(initialState: nil)
         let sut = Browser(.testDependencies(
-            userDefaultsClient: testDependency(of: UserDefaultsClient.self) {
-                $0.string = { key in
-                    guard key == "search-engine" else { return nil }
-                    return SearchEngine.google.rawValue
-                }
-            },
             webViewProxyClient: testDependency(of: WebViewProxyClient.self) {
                 $0.load = { value in
                     request.withLock { $0 = value }
@@ -46,60 +40,33 @@ struct BrowserTests {
     func send_onOpenURL_link() async {
         let request = OSAllocatedUnfairLock<URLRequest?>(initialState: nil)
         let sut = Browser(.testDependencies(
-            userDefaultsClient: testDependency(of: UserDefaultsClient.self) {
-                $0.string = { key in
-                    guard key == "search-engine" else { return nil }
-                    return SearchEngine.google.rawValue
-                }
-            },
             webViewProxyClient: testDependency(of: WebViewProxyClient.self) {
                 $0.load = { value in
                     request.withLock { $0 = value }
                 }
             }
         ))
-        await sut.send(.onOpenURL(URL(string: "telescopure://?link=https://example.com")!))
+        await sut.send(.onOpenURL(URL(string: "cloudcli://?link=https://example.com")!))
         #expect(request.withLock(\.self)?.url == URL(string: "https://example.com")!)
     }
 
     @MainActor @Test
-    func send_onOpenURL_plaintext() async {
+    func send_onOpenURL_session_link_opens_the_session() async {
         let request = OSAllocatedUnfairLock<URLRequest?>(initialState: nil)
         let sut = Browser(.testDependencies(
-            userDefaultsClient: testDependency(of: UserDefaultsClient.self) {
-                $0.string = { key in
-                    guard key == "search-engine" else { return nil }
-                    return SearchEngine.google.rawValue
-                }
-            },
             webViewProxyClient: testDependency(of: WebViewProxyClient.self) {
-                $0.load = { value in
-                    request.withLock { $0 = value }
-                }
+                $0.load = { value in request.withLock { $0 = value } }
             }
         ))
-        await sut.send(.onOpenURL(URL(string: "telescopure://?plaintext=dummy")!))
-        #expect(request.withLock(\.self)?.url == URL(string: "https://www.google.com/search?q=dummy")!)
+        await sut.send(.onOpenURL(URL(string: "cloudcli://session/abc%2Fd")!))
+        #expect(request.withLock(\.self)?.url?.absoluteString == "cloudcli://app/session/abc%2Fd")
     }
 
     @MainActor @Test
-    func send_onSubmit() async {
-        let request = OSAllocatedUnfairLock<URLRequest?>(initialState: nil)
-        let sut = Browser(.testDependencies(
-            userDefaultsClient: testDependency(of: UserDefaultsClient.self) {
-                $0.string = { key in
-                    guard key == "search-engine" else { return nil }
-                    return SearchEngine.bing.rawValue
-                }
-            },
-            webViewProxyClient: testDependency(of: WebViewProxyClient.self) {
-                $0.load = { value in
-                    request.withLock { $0 = value }
-                }
-            }
-        ))
-        await sut.send(.onSubmit("dummy"))
-        #expect(request.withLock(\.self)?.url == URL(string: "https://www.bing.com/search?q=dummy")!)
+    func send_decidePolicyFor_allows_the_app_origin() async {
+        let sut = Browser(.testDependencies())
+        await sut.send(.browserNavigation(.decidePolicyFor(URLRequest(url: URL(string: "cloudcli://app/")!))))
+        #expect(sut.isPresentedConfirmationDialog == false)
     }
 
     @MainActor @Test
@@ -416,29 +383,6 @@ struct BrowserTests {
         await sut.send(.browserUI(.runJavaScriptTextInputPanel("test", nil)))
         #expect(sut.webDialog == .prompt("test", ""))
         #expect(sut.isPresentedWebDialog)
-    }
-
-    @MainActor @Test
-    func send_bookmarkManagement_bookmarkItem_openBookmarkButtonTapped() async {
-        let request = OSAllocatedUnfairLock<URLRequest?>(initialState: nil)
-        let sut = Browser(.testDependencies(
-            webViewProxyClient: testDependency(of: WebViewProxyClient.self) {
-                $0.load = { value in
-                    request.withLock { $0 = value }
-                }
-            }
-        ))
-        let url = URL(string: "http://example.com")!
-        await sut.send(.bookmarkManagement(.bookmarkItem(.openBookmarkButtonTapped(url))))
-        #expect(sut.bookmarkManagement == nil)
-        #expect(request.withLock(\.self)?.url == url)
-    }
-
-    @MainActor @Test
-    func send_bookmarkManagement_doneButtonTapped() async {
-        let sut = Browser(.testDependencies())
-        await sut.send(.bookmarkManagement(.doneButtonTapped))
-        #expect(sut.bookmarkManagement == nil)
     }
 }
 

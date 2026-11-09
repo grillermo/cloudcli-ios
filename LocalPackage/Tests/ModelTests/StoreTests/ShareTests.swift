@@ -151,7 +151,7 @@ struct ShareTests {
         )
         await sut.send(.confirmButtonTapped)
         #expect(completeCount.withLock(\.self) == 1)
-        #expect(urls.withLock(\.self) == [URL(string: "telescopure://?link=https://example.com")!])
+        #expect(urls.withLock(\.self) == [URL(string: "cloudcli://?link=https://example.com")!])
     }
 
     @MainActor @Test
@@ -172,6 +172,6 @@ struct ShareTests {
         )
         await sut.send(.confirmButtonTapped)
         #expect(completeCount.withLock(\.self) == 1)
-        #expect(urls.withLock(\.self) == [URL(string: "telescopure://?plaintext=dummy")!])
+        #expect(urls.withLock(\.self) == [URL(string: "cloudcli://?plaintext=dummy")!])
     }
 }

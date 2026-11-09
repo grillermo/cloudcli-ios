@@ -11,12 +11,14 @@
 			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>telescopure</string>
-				<string>http</string>
-				<string>https</string>
+				<string>cloudcli</string>
 			</array>
 		</dict>
 	</array>
+	<key>CFBundleDisplayName</key>
+	<string>CloudCLI</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>CloudCLI records your voice and sends it to your own mema server to transcribe it.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

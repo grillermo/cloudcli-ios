@@ -11,7 +11,6 @@ import UIKit
 
     public let id: UUID
     public var path: [Path]
-    public var searchEngine: SearchEngine
     public var version: String
     public let developer = "Takuto Nakamura"
     public let action: (Action) async -> Void
@@ -20,7 +19,6 @@ import UIKit
         _ appDependencies: AppDependencies,
         id: UUID,
         path: [Path] = [],
-        searchEngine: SearchEngine? = nil,
         version: String? = nil,
         action: @escaping (Action) async -> Void
     ) {
@@ -30,13 +28,6 @@ import UIKit
         self.logService = .init(appDependencies)
         self.id = id
         self.path = path
-        self.searchEngine = if let searchEngine {
-            searchEngine
-        } else if let searchEngine = userDefaultsRepository.searchEngine {
-            searchEngine
-        } else {
-            .google
-        }
         self.version = version ?? Bundle.main.bundleVersion
         self.action = action
     }
@@ -45,19 +36,6 @@ import UIKit
         switch action {
         case let .task(screenName):
             logService.notice(.screenView(name: screenName))
-
-        case .defaultBrowserAppButtonTapped:
-            guard let settingsURL = uiApplicationClient.settingsURL() else { return }
-            _ = await uiApplicationClient.open(settingsURL)
-
-        case let .searchEngineSettingButtonTapped(appDependencies):
-            path.append(.searchEngineSetting(.init(
-                appDependencies,
-                selection: searchEngine,
-                action: { [weak self] in
-                    await self?.send(.searchEngineSetting($0))
-                }
-            )))
 
         case .crearCacheButtonTapped:
             let dataTypes = wkWebsiteDataStoreClient.allWebsiteDataTypes()
@@ -73,29 +51,18 @@ import UIKit
 
         case .doneButtonTapped:
             break
-
-        case let .searchEngineSetting(.onChangeSearchEngine(searchEngine)):
-            self.searchEngine = searchEngine
-            userDefaultsRepository.searchEngine = searchEngine
-
-        case .searchEngineSetting:
-            break
         }
     }
 
     public enum Action: Sendable {
         case task(String)
-        case defaultBrowserAppButtonTapped
-        case searchEngineSettingButtonTapped(AppDependencies)
         case crearCacheButtonTapped
         case openRepositoryButtonTapped
         case licensesButtonTapped(AppDependencies)
         case doneButtonTapped
-        case searchEngineSetting(SearchEngineSetting.Action)
     }
 
     public enum Path: Hashable {
-        case searchEngineSetting(SearchEngineSetting)
         case licenses(Licenses)
 
         public static func ==(lhs: Path, rhs: Path) -> Bool {
@@ -108,8 +75,6 @@ import UIKit
 
         var id: Int {
             switch self {
-            case let .searchEngineSetting(value):
-                Int(bitPattern: ObjectIdentifier(value))
             case let .licenses(value):
                 Int(bitPattern: ObjectIdentifier(value))
             }

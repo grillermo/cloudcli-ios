@@ -10,43 +10,6 @@ struct SettingsView: View {
         NavigationStack(path: $store.path) {
             List {
                 Section {
-                    Button {
-                        Task {
-                            await store.send(.defaultBrowserAppButtonTapped)
-                        }
-                    } label: {
-                        LabeledContent {
-                            Image(systemName: "chevron.right")
-                        } label: {
-                            Label {
-                                Text("defaultBrowserApp", bundle: .module)
-                                    .foregroundStyle(Color.primary)
-                            } icon: {
-                                Image(systemName: "app.badge.checkmark")
-                            }
-                        }
-                    }
-                    .buttonStyle(.borderless)
-                    Button {
-                        Task {
-                            await store.send(.searchEngineSettingButtonTapped(appDependencies))
-                        }
-                    } label: {
-                        LabeledContent {
-                            HStack {
-                                Text(store.searchEngine.label)
-                                Image(systemName: "chevron.right")
-                            }
-                        } label: {
-                            Label {
-                                Text("searchEngine", bundle: .module)
-                                    .foregroundStyle(Color.primary)
-                            } icon: {
-                                Image(systemName: "magnifyingglass")
-                            }
-                        }
-                    }
-                    .buttonStyle(.borderless)
                     LabeledContent {
                         Button(role: .destructive) {
                             Task {
@@ -128,9 +91,6 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: Settings.Path.self) { path in
                 switch path {
-                case let .searchEngineSetting(store):
-                    SearchEngineSettingView(store: store)
-
                 case let .licenses(store):
                     LicensesView(store: store)
                 }

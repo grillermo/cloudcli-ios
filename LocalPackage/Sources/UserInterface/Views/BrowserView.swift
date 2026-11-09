@@ -95,9 +95,6 @@ struct BrowserView: View {
         .sheet(item: $store.settings) { store in
             SettingsView(store: store)
         }
-        .sheet(item: $store.bookmarkManagement) { store in
-            BookmarkManagementView(store: store)
-        }
         .webDialog(
             isPresented: $store.isPresentedWebDialog,
             presenting: store.webDialog,

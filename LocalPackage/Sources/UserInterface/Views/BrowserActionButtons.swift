@@ -2,7 +2,6 @@ import Model
 import SwiftUI
 
 struct BrowserActionButtons: View {
-    @Environment(\.appDependencies) private var appDependencies
     @Bindable var store: Browser
 
     var body: some View {
@@ -24,18 +23,6 @@ struct BrowserActionButtons: View {
             }
             .presentationCompactAdaptation(.popover)
         }
-        Button {
-            Task {
-                await store.send(.bookmarkButtonTapped(appDependencies))
-            }
-        } label: {
-            Label {
-                Text("openBookmarks", bundle: .module)
-            } icon: {
-                Image(systemName: "book")
-            }
-        }
-        .accessibilityIdentifier("openBookmarksButton")
         Button {
             Task {
                 await store.send(.hideToolbarButtonTapped)
