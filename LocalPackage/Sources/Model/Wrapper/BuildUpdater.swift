@@ -15,6 +15,7 @@ import Observation
     private let location: BuildLocation
     private let fetchManifest: @Sendable () async throws -> BuildManifest
     private let watchdog: Duration
+    private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var watchdogTask: Task<Void, Never>?
     /// The build that was just applied and has not signalled ready yet.
     @ObservationIgnored private var awaitingReadyID: String?
@@ -27,12 +28,14 @@ import Observation
         store: BuildStore,
         location: BuildLocation,
         fetchManifest: @escaping @Sendable () async throws -> BuildManifest,
-        watchdog: Duration = .seconds(15)
+        watchdog: Duration = .seconds(15),
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.store = store
         self.location = location
         self.fetchManifest = fetchManifest
         self.watchdog = watchdog
+        self.sleep = sleep
     }
 
     public func launch() async {
@@ -124,8 +127,8 @@ import Observation
     private func armWatchdog(for id: String) {
         watchdogTask?.cancel()
         awaitingReadyID = id
-        watchdogTask = Task { [weak self, watchdog] in
-            try? await Task.sleep(for: watchdog)
+        watchdogTask = Task { [weak self, watchdog, sleep] in
+            try? await sleep(watchdog)
             guard !Task.isCancelled else { return }
             await self?.rollBack(from: id)
         }

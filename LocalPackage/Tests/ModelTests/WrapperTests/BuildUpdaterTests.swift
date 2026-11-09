@@ -6,7 +6,51 @@ import Testing
 @testable import DataSource
 @testable import Model
 
+/// Stands in for Task.sleep: every watchdog timer waits here until the test fires it, so no test
+/// depends on wall-clock time. Timers are numbered from 1 in the order they start sleeping.
+final class TimerGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiters: [Int: CheckedContinuation<Void, any Error>] = [:]
+    private var cancelled: Set<Int> = []
+    private var count = 0
+
+    var registered: Int { lock.withLock { count } }
+
+    func sleep(_ duration: Duration) async throws {
+        let id = lock.withLock { () -> Int in count += 1; return count }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let alreadyCancelled = lock.withLock { () -> Bool in
+                    if cancelled.contains(id) { return true }
+                    waiters[id] = continuation
+                    return false
+                }
+                if alreadyCancelled { continuation.resume(throwing: CancellationError()) }
+            }
+        } onCancel: {
+            let continuation = lock.withLock { () -> CheckedContinuation<Void, any Error>? in
+                cancelled.insert(id)
+                return waiters.removeValue(forKey: id)
+            }
+            continuation?.resume(throwing: CancellationError())
+        }
+    }
+
+    /// Lets timer `id` run out. Does nothing if it was cancelled.
+    func fire(_ id: Int) {
+        lock.withLock { waiters.removeValue(forKey: id) }?.resume()
+    }
+
+    /// Waits, boundedly, until `n` timers have started sleeping.
+    func waitForTimers(_ n: Int) async {
+        for _ in 0..<2000 where registered < n {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}
+
 @MainActor
+@Suite(.timeLimit(.minutes(1)))
 struct BuildUpdaterTests {
     private nonisolated let body = Data("a".utf8)
 
@@ -26,7 +70,8 @@ struct BuildUpdaterTests {
     private func makeUpdater(
         latest: OSAllocatedUnfairLock<BuildManifest?>,
         watchdog: Duration = .seconds(60),
-        store: BuildStore? = nil
+        store: BuildStore? = nil,
+        gate: TimerGate? = nil
     ) -> BuildUpdater {
         BuildUpdater(
             store: store ?? makeStore(),
@@ -35,8 +80,18 @@ struct BuildUpdaterTests {
                 guard let value = latest.withLock(\.self) else { throw URLError(.notConnectedToInternet) }
                 return value
             },
-            watchdog: watchdog
+            watchdog: watchdog,
+            sleep: gate.map { gate in { @Sendable duration in try await gate.sleep(duration) } }
+                ?? { @Sendable duration in try await Task.sleep(for: duration) }
         )
+    }
+
+    /// Gives pending main-actor and store work every chance to run, without any wall-clock wait.
+    private func drain(_ store: BuildStore) async {
+        for _ in 0..<30 {
+            await Task.yield()
+            _ = await store.pointer()
+        }
     }
 
     /// Launches and reports the loaded build as ready, so later applies have a confirmed build to fall back to.
@@ -89,11 +144,14 @@ struct BuildUpdaterTests {
     @Test
     func a_build_that_never_signals_ready_rolls_back() async throws {
         let latest = OSAllocatedUnfairLock<BuildManifest?>(initialState: manifest("one"))
-        let updater = makeUpdater(latest: latest, watchdog: .milliseconds(20))
+        let gate = TimerGate()
+        let updater = makeUpdater(latest: latest, gate: gate)
         await launchConfirmed(updater)
         latest.withLock { $0 = manifest("two") }
         await updater.check()
         await updater.applyPending()
+        await gate.waitForTimers(1)
+        gate.fire(1)
         // Poll instead of sleeping a fixed time: the rollback hops through an actor and can be slow under load.
         try await waitForRollback(updater)
         #expect(updater.activeBuildID == "one")
@@ -107,14 +165,19 @@ struct BuildUpdaterTests {
     @Test
     func a_ready_signal_keeps_the_new_build() async throws {
         let latest = OSAllocatedUnfairLock<BuildManifest?>(initialState: manifest("one"))
-        let updater = makeUpdater(latest: latest, watchdog: .milliseconds(20))
+        let store = makeStore()
+        let gate = TimerGate()
+        let updater = makeUpdater(latest: latest, store: store, gate: gate)
         await launchConfirmed(updater)
         latest.withLock { $0 = manifest("two") }
         await updater.check()
         await updater.applyPending()
+        await gate.waitForTimers(1)
         updater.pageReady()
-        try await Task.sleep(for: .milliseconds(200))
+        gate.fire(1)
+        await drain(store)
         #expect(updater.activeBuildID == "two")
+        #expect(updater.rollbackMessage == nil)
     }
 
     @Test
@@ -145,31 +208,44 @@ struct BuildUpdaterTests {
     @Test
     func a_stale_timer_cannot_roll_back_a_newer_build() async throws {
         let latest = OSAllocatedUnfairLock<BuildManifest?>(initialState: manifest("one"))
-        let updater = makeUpdater(latest: latest, watchdog: .milliseconds(400))
+        let store = makeStore()
+        let gate = TimerGate()
+        let updater = makeUpdater(latest: latest, store: store, gate: gate)
         await launchConfirmed(updater)
         latest.withLock { $0 = manifest("two") }
         await updater.check()
         await updater.applyPending()
-        try await Task.sleep(for: .milliseconds(200))
+        await gate.waitForTimers(1)
         latest.withLock { $0 = manifest("three") }
         await updater.check()
         await updater.applyPending()
-        // Build two's timer fires at about 400 ms. Build three's fires at about 600 ms.
-        try await Task.sleep(for: .milliseconds(300))
+        await gate.waitForTimers(2)
+        // Build two's timer runs out after build three is already active.
+        gate.fire(1)
+        await drain(store)
         #expect(updater.activeBuildID == "three")
         #expect(updater.rollbackMessage == nil)
+
+        // Build three's own timer still works.
+        gate.fire(2)
+        try await waitForRollback(updater)
+        #expect(updater.activeBuildID == "one")
     }
 
     @Test
     func a_ready_build_is_never_rolled_back_later() async throws {
         let latest = OSAllocatedUnfairLock<BuildManifest?>(initialState: manifest("one"))
-        let updater = makeUpdater(latest: latest, watchdog: .milliseconds(20))
+        let store = makeStore()
+        let gate = TimerGate()
+        let updater = makeUpdater(latest: latest, store: store, gate: gate)
         await launchConfirmed(updater)
         latest.withLock { $0 = manifest("two") }
         await updater.check()
         await updater.applyPending()
+        await gate.waitForTimers(1)
         updater.pageReady()
-        try await Task.sleep(for: .milliseconds(200))
+        gate.fire(1)
+        await drain(store)
         #expect(updater.activeBuildID == "two")
         #expect(updater.rollbackMessage == nil)
         #expect(updater.loadNonce == 2)
@@ -192,14 +268,18 @@ struct BuildUpdaterTests {
     @Test
     func rollback_skips_a_build_that_never_signalled_ready() async throws {
         let latest = OSAllocatedUnfairLock<BuildManifest?>(initialState: manifest("one"))
-        let updater = makeUpdater(latest: latest, watchdog: .milliseconds(100))
+        let gate = TimerGate()
+        let updater = makeUpdater(latest: latest, gate: gate)
         await launchConfirmed(updater)
         latest.withLock { $0 = manifest("two") }
         await updater.check()
         await updater.applyPending()
+        await gate.waitForTimers(1)
         latest.withLock { $0 = manifest("three") }
         await updater.check()
         await updater.applyPending()
+        await gate.waitForTimers(2)
+        gate.fire(2)
         try await waitForRollback(updater)
         #expect(updater.activeBuildID == "one")
     }
@@ -214,9 +294,12 @@ struct BuildUpdaterTests {
         await first.check()
         await first.applyPending()
         // The app is killed here, before build two signalled ready.
-        let second = makeUpdater(latest: latest, watchdog: .milliseconds(20), store: store)
+        let gate = TimerGate()
+        let second = makeUpdater(latest: latest, store: store, gate: gate)
         await second.launch()
         #expect(second.activeBuildID == "two")
+        await gate.waitForTimers(1)
+        gate.fire(1)
         try await waitForRollback(second)
         #expect(second.activeBuildID == "one")
         #expect(second.pendingBuildID == nil)
@@ -228,9 +311,12 @@ struct BuildUpdaterTests {
         let store = makeStore()
         let first = makeUpdater(latest: latest, store: store)
         await first.launch()
-        let second = makeUpdater(latest: latest, watchdog: .milliseconds(20), store: store)
+        let gate = TimerGate()
+        let second = makeUpdater(latest: latest, store: store, gate: gate)
         await second.launch()
-        try await Task.sleep(for: .milliseconds(200))
+        await drain(store)
+        // No watchdog was armed, because there is no confirmed build to return to.
+        #expect(gate.registered == 0)
         #expect(second.activeBuildID == "one")
         #expect(second.rollbackMessage == nil)
         second.pageReady()
@@ -241,12 +327,15 @@ struct BuildUpdaterTests {
     @Test
     func a_ready_signal_from_an_older_page_does_not_confirm_the_new_build() async throws {
         let latest = OSAllocatedUnfairLock<BuildManifest?>(initialState: manifest("one"))
-        let updater = makeUpdater(latest: latest, watchdog: .milliseconds(100))
+        let gate = TimerGate()
+        let updater = makeUpdater(latest: latest, gate: gate)
         await launchConfirmed(updater)
         latest.withLock { $0 = manifest("two") }
         await updater.check()
         await updater.applyPending()
+        await gate.waitForTimers(1)
         updater.pageReady(buildID: "one")
+        gate.fire(1)
         try await waitForRollback(updater)
         #expect(updater.activeBuildID == "one")
     }
@@ -256,17 +345,19 @@ struct BuildUpdaterTests {
         for _ in 0..<15 {
             let latest = OSAllocatedUnfairLock<BuildManifest?>(initialState: manifest("one"))
             let store = makeStore()
-            let updater = makeUpdater(latest: latest, watchdog: .milliseconds(1), store: store)
+            let gate = TimerGate()
+            let updater = makeUpdater(latest: latest, store: store, gate: gate)
             await launchConfirmed(updater)
             latest.withLock { $0 = manifest("two") }
             await updater.check()
             await updater.applyPending()
+            await gate.waitForTimers(1)
             latest.withLock { $0 = manifest("three") }
             await updater.check()
-            async let apply: Void = updater.applyPending()
-            try await Task.sleep(for: .milliseconds(30))
-            await apply
-            try await Task.sleep(for: .milliseconds(50))
+            // The timer runs out in the same instant the user taps apply.
+            gate.fire(1)
+            await updater.applyPending()
+            await drain(store)
             // The store and the updater must agree on what is loaded.
             #expect(await store.pointer().current == updater.activeBuildID)
         }
