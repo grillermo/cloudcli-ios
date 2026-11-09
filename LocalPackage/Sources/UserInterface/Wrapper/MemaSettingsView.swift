@@ -14,10 +14,12 @@ struct MemaSettingsView: View {
             Form {
                 Section("Mema server") {
                     TextField("https://…", text: $urlText)
+                        .onChange(of: urlText) { message = nil }
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                     SecureField("Bearer token", text: $token)
+                        .onChange(of: token) { message = nil }
                 }
                 Section {
                     Button("Paste from clipboard", action: paste)
@@ -30,6 +32,8 @@ struct MemaSettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save", action: save)
+                        .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

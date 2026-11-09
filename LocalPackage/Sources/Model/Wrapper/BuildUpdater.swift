@@ -71,6 +71,8 @@ import Observation
             } else {
                 pendingBuildID = manifest.buildId
             }
+        } catch is CancellationError {
+            return
         } catch {
             if activeBuildID == nil { needsFirstDownload = true }
         }

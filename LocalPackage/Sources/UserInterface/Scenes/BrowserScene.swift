@@ -3,7 +3,7 @@ import SwiftUI
 
 public struct BrowserScene: Scene {
     @Environment(\.appDependencies) private var appDependencies
-    @State private var services = AppServices.live()
+    private let services = AppServices.shared
 
     public init() {}
 

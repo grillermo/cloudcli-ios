@@ -115,8 +115,7 @@ import WebUI
                 await webViewProxyClient.load(URLRequest(url: url))
             case "cloudcli":
                 if url.host() == "session" {
-                    let encoded = url.path(percentEncoded: true)
-                    guard let target = URL(string: "cloudcli://app/session\(encoded)") else { return }
+                    guard let target = NativeBridgeSupport.sessionTarget(path: url.path(percentEncoded: true)) else { return }
                     await webViewProxyClient.load(URLRequest(url: target))
                     return
                 }

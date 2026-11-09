@@ -4,6 +4,7 @@ import Observation
 import UIKit
 import WebKit
 
+@MainActor
 private final class ScriptBridge: NSObject, WKScriptMessageHandler {
     private let onReady: @MainActor (String?) -> Void
 
@@ -12,11 +13,16 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any], body["type"] as? String == "ready" else { return }
+        let origin = message.frameInfo.securityOrigin
         // A page that reports which build it is lets the updater ignore a late signal from a page
         // that outlived a switch. Pages that do not report one are matched to the active build.
-        let buildID = body["buildId"] as? String
-        MainActor.assumeIsolated { onReady(buildID) }
+        guard let ready = NativeBridgeSupport.parseReady(
+            body: message.body,
+            isMainFrame: message.frameInfo.isMainFrame,
+            scheme: origin.protocol,
+            host: origin.host
+        ) else { return }
+        onReady(ready.buildID)
     }
 }
 
@@ -26,9 +32,8 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
     public let credentials = MemaCredentialStore()
     public let webViewConfiguration: WKWebViewConfiguration
 
-    public static func live() -> AppServices {
-        AppServices(webViewProxyClient: AppDependencies.shared.webViewProxyClient)
-    }
+    /// One instance per process: it owns the build store, the recorder and the web view configuration.
+    public static let shared = AppServices(webViewProxyClient: AppDependencies.shared.webViewProxyClient)
 
     public init(webViewProxyClient: WebViewProxyClient) {
         let support = URL.applicationSupportDirectory
@@ -48,12 +53,13 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
             client: .live,
             credentials: { credentialStore.load() },
             insert: { text in
-                guard let data = try? JSONEncoder().encode([text]),
-                      let json = String(data: data, encoding: .utf8) else { return false }
-                let script = "window.__nativeDictation ? window.__nativeDictation.insert(\(json)[0]) : false"
+                // Only the app's own page may receive dictated text; anything else falls back to the clipboard.
+                guard NativeBridgeSupport.isAppPage(await webViewProxyClient.url()),
+                      let script = NativeBridgeSupport.insertScript(for: text) else { return false }
                 return await webViewProxyClient.evaluateJavaScript(script)
             },
             send: {
+                guard NativeBridgeSupport.isAppPage(await webViewProxyClient.url()) else { return }
                 _ = await webViewProxyClient.evaluateJavaScript(
                     "window.__nativeDictation ? window.__nativeDictation.send() : false"
                 )

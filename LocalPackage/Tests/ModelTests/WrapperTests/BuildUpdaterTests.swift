@@ -117,6 +117,19 @@ struct BuildUpdaterTests {
     }
 
     @Test
+    func a_cancelled_check_is_not_a_failed_first_download() async {
+        let updater = BuildUpdater(
+            store: makeStore(),
+            location: BuildLocation(),
+            fetchManifest: { throw CancellationError() }
+        )
+        await updater.launch()
+        #expect(!updater.needsFirstDownload)
+        #expect(updater.activeBuildID == nil)
+        #expect(!updater.isChecking)
+    }
+
+    @Test
     func first_launch_offline_reports_it() async {
         let updater = makeUpdater(latest: .init(initialState: nil))
         await updater.launch()
