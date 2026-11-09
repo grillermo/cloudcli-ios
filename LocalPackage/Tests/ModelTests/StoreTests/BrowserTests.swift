@@ -64,9 +64,40 @@ struct BrowserTests {
 
     @MainActor @Test
     func send_decidePolicyFor_allows_the_app_origin() async {
-        let sut = Browser(.testDependencies())
+        let appState = OSAllocatedUnfairLock<AppState>(initialState: .init())
+        let actionPolicy = OSAllocatedUnfairLock<WKNavigationActionPolicy?>(initialState: nil)
+        let sut = Browser(.testDependencies(
+            appStateClient: .testDependency(appState, receive: .init(action: {
+                switch ($0, $1) {
+                case (\AppState.actionPolicySubject, let value as WKNavigationActionPolicy):
+                    actionPolicy.withLock { $0 = value }
+                default:
+                    break
+                }
+            }))
+        ))
         await sut.send(.browserNavigation(.decidePolicyFor(URLRequest(url: URL(string: "cloudcli://app/")!))))
+        #expect(actionPolicy.withLock(\.self) == .allow)
         #expect(sut.isPresentedConfirmationDialog == false)
+    }
+
+    @MainActor @Test(arguments: ["cloudcli://evil/", "cloudcli://app.evil"] as [String])
+    func send_decidePolicyFor_rejects_other_cloudcli_hosts(_ urlString: String) async {
+        let appState = OSAllocatedUnfairLock<AppState>(initialState: .init())
+        let actionPolicy = OSAllocatedUnfairLock<WKNavigationActionPolicy?>(initialState: nil)
+        let sut = Browser(.testDependencies(
+            appStateClient: .testDependency(appState, receive: .init(action: {
+                switch ($0, $1) {
+                case (\AppState.actionPolicySubject, let value as WKNavigationActionPolicy):
+                    actionPolicy.withLock { $0 = value }
+                default:
+                    break
+                }
+            }))
+        ))
+        await sut.send(.browserNavigation(.decidePolicyFor(URLRequest(url: URL(string: urlString)!))))
+        #expect(actionPolicy.withLock(\.self) == .cancel)
+        #expect(sut.isPresentedConfirmationDialog)
     }
 
     @MainActor @Test

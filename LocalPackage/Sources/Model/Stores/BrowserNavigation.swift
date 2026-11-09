@@ -37,8 +37,35 @@ import WebKit
     }
 }
 
+struct WebProcessRecovery {
+    enum Plan: Equatable {
+        case none
+        case reload
+        case load(URL)
+    }
+
+    static let maxRetries = 3
+
+    private(set) var retries = 0
+    private(set) var lastURL: URL?
+
+    mutating func didFinish(url: URL?) {
+        retries = 0
+        if let url { lastURL = url }
+    }
+
+    mutating func didTerminate(currentURL: URL?) -> Plan {
+        guard retries < Self.maxRetries else { return .none }
+        retries += 1
+        if currentURL != nil { return .reload }
+        if let lastURL { return .load(lastURL) }
+        return .none
+    }
+}
+
 public final class BrowserNavigationDelegate: NSObject, WKNavigationDelegate, ObservableObject {
     private var store: BrowserNavigation
+    private var recovery = WebProcessRecovery()
 
     init(store: BrowserNavigation) {
         self.store = store
@@ -74,8 +101,18 @@ public final class BrowserNavigationDelegate: NSObject, WKNavigationDelegate, Ob
         }
     }
 
+    public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        recovery.didFinish(url: webView.url)
+    }
+
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        webView.reload()
+        switch recovery.didTerminate(currentURL: webView.url) {
+        case .none:
+            break
+        case .reload:
+            webView.reload()
+        case let .load(url):
+            webView.load(URLRequest(url: url))
+        }
     }
 }
-
