@@ -1,6 +1,11 @@
 import Foundation
 
+/// Holds recordings that were not transcribed yet. `root` must live in Application
+/// Support (not tmp or Caches), or iOS may purge audio that was never transcribed.
 public struct PendingRecordingStore: Sendable {
+    /// Readable after the first unlock, so a recording survives a locked phone.
+    public static let protection = FileProtectionType.completeUntilFirstUserAuthentication
+
     private let root: URL
 
     public init(root: URL) {
@@ -8,7 +13,9 @@ public struct PendingRecordingStore: Sendable {
     }
 
     public func newFile() throws -> URL {
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+            attributes: [.protectionKey: Self.protection])
+        try? FileManager.default.setAttributes([.protectionKey: Self.protection], ofItemAtPath: root.path)
         return root.appending(path: "\(UUID().uuidString).m4a")
     }
 

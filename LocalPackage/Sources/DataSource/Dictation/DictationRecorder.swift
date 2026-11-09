@@ -41,6 +41,7 @@ public final class DictationRecorder: DictationRecording {
             recorder.delegate = delegate
             guard recorder.record() else { throw URLError(.cannotCreateFile) }
             self.recorder = recorder
+            try? FileManager.default.setAttributes([.protectionKey: PendingRecordingStore.protection], ofItemAtPath: file.path)
         } catch {
             // The session was activated above: release it, or other apps stay ducked.
             try? session.setActive(false, options: .notifyOthersOnDeactivation)
@@ -58,6 +59,13 @@ public final class DictationRecorder: DictationRecording {
 
     fileprivate func interrupted() {
         guard recorder != nil else { return }
+        onInterrupted?()
+    }
+
+    /// A delegate callback may arrive late, from a recorder that was already
+    /// stopped: it must not end the recording that replaced it.
+    fileprivate func interrupted(by id: ObjectIdentifier) {
+        guard let recorder, ObjectIdentifier(recorder) == id else { return }
         onInterrupted?()
     }
 
@@ -85,11 +93,13 @@ public final class DictationRecorder: DictationRecording {
         weak var owner: DictationRecorder?
 
         func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
-            Task { @MainActor in self.owner?.interrupted() }
+            let id = ObjectIdentifier(recorder)
+            Task { @MainActor in self.owner?.interrupted(by: id) }
         }
 
         func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: (any Error)?) {
-            Task { @MainActor in self.owner?.interrupted() }
+            let id = ObjectIdentifier(recorder)
+            Task { @MainActor in self.owner?.interrupted(by: id) }
         }
     }
 }

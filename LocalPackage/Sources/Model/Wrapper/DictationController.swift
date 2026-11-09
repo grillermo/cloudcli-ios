@@ -17,6 +17,8 @@ import Observation
     /// The last transcription failure, for the UI. Stays nil for user cancellation.
     public private(set) var lastFailure: MemaClient.Failure?
     public var permissionDenied = false
+    /// The last attempt to start recording failed (no file, no audio session).
+    public private(set) var startFailed = false
 
     public var failedCount: Int { failed.count }
 
@@ -27,6 +29,7 @@ import Observation
     private let insert: @MainActor (String) async -> Bool
     private let send: @MainActor () async -> Void
     private let copy: @MainActor (String) -> Void
+    private let insertTimeout: Duration
     @ObservationIgnored private var currentFile: URL?
     @ObservationIgnored private var inFlight: Set<URL> = []
     /// True from the first tap until recording starts or fails: the permission
@@ -40,7 +43,8 @@ import Observation
         credentials: @escaping @MainActor () -> MemaCredentials?,
         insert: @escaping @MainActor (String) async -> Bool,
         send: @escaping @MainActor () async -> Void,
-        copy: @escaping @MainActor (String) -> Void
+        copy: @escaping @MainActor (String) -> Void,
+        insertTimeout: Duration = .seconds(5)
     ) {
         self.recorder = recorder
         self.store = store
@@ -49,6 +53,7 @@ import Observation
         self.insert = insert
         self.send = send
         self.copy = copy
+        self.insertTimeout = insertTimeout
         recorder.onInterrupted = { [weak self] in
             Task { await self?.interrupted() }
         }
@@ -68,10 +73,12 @@ import Observation
             return
         }
         permissionDenied = false
+        startFailed = false
         let file: URL
         do {
             file = try store.newFile()
         } catch {
+            startFailed = true
             return
         }
         do {
@@ -83,6 +90,7 @@ import Observation
             // Nothing usable was captured.
             recorder.stop()
             store.delete(file)
+            startFailed = true
         }
     }
 
@@ -109,18 +117,19 @@ import Observation
         defer { inFlight.remove(file) }
         do {
             let text = try await transcribe(file)
-            // The recording is only discarded once the transcription is confirmed.
-            store.delete(file)
             guard !text.isEmpty else {
+                // A confirmed transcription of silence: nothing to keep (the plan discards it).
+                store.delete(file)
                 state = .idle
                 return
             }
-            if await insert(text) {
-                state = .readyToSend
-            } else {
-                copy(text)
-                state = .idle
-            }
+            // The text goes to the clipboard first and the audio is only deleted
+            // once that and the insert attempt are done, so a hung or killed
+            // insert never leaves the dictation nowhere.
+            copy(text)
+            let inserted = await insertBounded(text)
+            store.delete(file)
+            state = inserted ? .readyToSend : .idle
         } catch {
             record(failure: error)
             if !failed.contains(file) { failed.append(file) }
@@ -167,6 +176,30 @@ import Observation
         guard !isRetrying, let file = failed.first else { return }
         store.delete(file)
         failed.removeFirst()
+    }
+
+    /// Runs the insert but gives up after `insertTimeout`, treating that as a failed insert.
+    /// An unstructured race: a task group would wait for an insert that never returns.
+    private func insertBounded(_ text: String) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let once = Once(continuation)
+            let insert = insert
+            let timeout = insertTimeout
+            Task { @MainActor in once.resume(await insert(text)) }
+            Task { @MainActor in
+                try? await Task.sleep(for: timeout)
+                once.resume(false)
+            }
+        }
+    }
+
+    @MainActor private final class Once {
+        private var continuation: CheckedContinuation<Bool, Never>?
+        init(_ continuation: CheckedContinuation<Bool, Never>) { self.continuation = continuation }
+        func resume(_ value: Bool) {
+            continuation?.resume(returning: value)
+            continuation = nil
+        }
     }
 
     private func record(failure error: any Error) {

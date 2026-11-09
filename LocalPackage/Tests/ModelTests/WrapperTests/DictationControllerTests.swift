@@ -31,22 +31,24 @@ final class FakeRecorder: DictationRecording {
 
 /// Holds a request until the test releases it.
 actor Gate {
-    private var continuation: CheckedContinuation<Void, Never>?
+    private var waiters: [CheckedContinuation<Void, Never>] = []
     private var opened = false
 
     func wait() async {
         if opened { return }
-        await withCheckedContinuation { continuation = $0 }
+        await withCheckedContinuation { waiters.append($0) }
     }
 
     func open() {
         opened = true
-        continuation?.resume()
-        continuation = nil
+        let pending = waiters
+        waiters = []
+        pending.forEach { $0.resume() }
     }
 }
 
 @MainActor
+@Suite(.timeLimit(.minutes(1)))
 struct DictationControllerTests {
     final class Sink {
         var inserted: [String] = []
@@ -65,7 +67,10 @@ struct DictationControllerTests {
         store: PendingRecordingStore,
         status: OSAllocatedUnfairLock<Int>,
         hasCredentials: Bool = true,
-        handler: Handler? = nil
+        handler: Handler? = nil,
+        insert: (@MainActor (String) async -> Bool)? = nil,
+        sendGate: Gate? = nil,
+        insertTimeout: Duration = .seconds(5)
     ) -> DictationController {
         let client = MemaClient(send: handler ?? { request in
             let code = request.httpMethod == "POST" ? status.withLock(\.self) : 200
@@ -78,12 +83,16 @@ struct DictationControllerTests {
             store: store,
             client: client,
             credentials: { available },
-            insert: { text in
+            insert: insert ?? { text in
                 sink.inserted.append(text)
                 return sink.insertSucceeds
             },
-            send: { sink.sends += 1 },
-            copy: { sink.clipboard = $0 }
+            send: {
+                sink.sends += 1
+                await sendGate?.wait()
+            },
+            copy: { sink.clipboard = $0 },
+            insertTimeout: insertTimeout
         )
     }
 
@@ -95,8 +104,21 @@ struct DictationControllerTests {
         (Data(#"{"text":"hola"}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: headers)!)
     }
 
-    private func waitUntil(_ condition: () -> Bool) async {
-        for _ in 0..<1000 where !condition() { await Task.yield() }
+    /// Polls until the condition holds. Fails the test when the deadline passes.
+    private func waitUntil(
+        _ what: String = "condition",
+        timeout: Duration = .seconds(5),
+        sourceLocation: SourceLocation = #_sourceLocation,
+        _ condition: () -> Bool
+    ) async {
+        let deadline = ContinuousClock.now + timeout
+        while !condition() {
+            if ContinuousClock.now >= deadline {
+                Issue.record("Timed out waiting for \(what)", sourceLocation: sourceLocation)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
     }
 
     @Test
@@ -297,13 +319,21 @@ struct DictationControllerTests {
     @Test
     func a_double_tap_on_return_sends_once() async {
         let sink = Sink()
-        let sut = makeController(sink: sink, store: makeStore(), status: .init(initialState: 200))
+        let gate = Gate()
+        let sut = makeController(sink: sink, store: makeStore(), status: .init(initialState: 200), sendGate: gate)
         await sut.voiceTapped()
         await sut.stopTapped()
-        async let first: Void = sut.returnTapped()
-        async let second: Void = sut.returnTapped()
-        _ = await (first, second)
+        let first = Task { await sut.returnTapped() }
+        await waitUntil("the first send to start") { sink.sends == 1 }
+        // The first send is suspended: this tap really interleaves with it.
+        // It runs as a task so a broken guard fails the count instead of hanging on the gate.
+        let second = Task { await sut.returnTapped() }
+        try? await Task.sleep(for: .milliseconds(50))
+        await gate.open()
+        await first.value
+        await second.value
         #expect(sink.sends == 1)
+        #expect(sut.state == .idle)
     }
 
     @Test
@@ -423,29 +453,36 @@ struct DictationControllerTests {
 
     @Test
     func a_failure_arriving_during_a_retry_is_not_dropped() async {
-        let gate = Gate()
+        let entered = Gate()
+        let release = Gate()
         let store = makeStore()
-        let status = OSAllocatedUnfairLock(initialState: 500)
-        let slow = OSAllocatedUnfairLock(initialState: false)
-        let sut = makeController(sink: Sink(), store: store, status: status, handler: { request in
+        let posts = OSAllocatedUnfairLock(initialState: 0)
+        // POST 1 (first recording) fails, POST 2 (the retry) waits for the test, POST 3 fails.
+        let sut = makeController(sink: Sink(), store: store, status: .init(initialState: 200), handler: { request in
             guard request.httpMethod == "POST" else { return Self.okResponse(request) }
-            if slow.withLock(\.self) { await gate.wait() }
-            return Self.okResponse(request, status: status.withLock(\.self))
+            let n = posts.withLock { count -> Int in
+                count += 1
+                return count
+            }
+            switch n {
+            case 2:
+                await entered.open()
+                await release.wait()
+                return Self.okResponse(request)
+            default:
+                return Self.okResponse(request, status: 500)
+            }
         })
         await sut.voiceTapped()
         await sut.stopTapped()
-        slow.withLock { $0 = true }
-        status.withLock { $0 = 200 }
+        #expect(sut.failedCount == 1)
         let retrying = Task { await sut.retryAndCopyTapped() }
-        await waitUntil { sut.isRetrying }
+        await entered.wait()
         // A new recording fails while the retry is in flight.
-        slow.withLock { $0 = false }
-        status.withLock { $0 = 500 }
         await sut.voiceTapped()
         await sut.stopTapped()
         #expect(sut.failedCount == 2)
-        status.withLock { $0 = 200 }
-        await gate.open()
+        await release.open()
         await retrying.value
         #expect(sut.failedCount == 1)
         #expect(sut.failed == store.all())
@@ -487,5 +524,54 @@ struct DictationControllerTests {
         #expect(sut.state == .idle)
         #expect(sink.inserted.isEmpty)
         #expect(store.all().isEmpty)
+    }
+
+    // MARK: Insert and clipboard safety
+
+    @Test
+    func the_text_reaches_the_clipboard_before_the_audio_is_deleted_even_when_insert_succeeds() async {
+        let sink = Sink()
+        let store = makeStore()
+        let sut = makeController(sink: sink, store: store, status: .init(initialState: 200))
+        await sut.voiceTapped()
+        await sut.stopTapped()
+        #expect(sink.clipboard == "hola")
+        #expect(sink.inserted == ["hola"])
+        #expect(sut.state == .readyToSend)
+        #expect(store.all().isEmpty)
+    }
+
+    @Test
+    func an_insert_that_never_returns_times_out_without_losing_the_text() async {
+        let store = makeStore()
+        let sink = Sink()
+        let never = Gate()
+        let observed = OSAllocatedUnfairLock(initialState: [URL]())
+        let sut = makeController(sink: sink, store: store, status: .init(initialState: 200), insert: { _ in
+            // The audio must still exist while the text only lives on the clipboard.
+            observed.withLock { $0 = store.all() }
+            await never.wait()
+            return true
+        }, insertTimeout: .milliseconds(50))
+        await sut.voiceTapped()
+        await sut.stopTapped()
+        #expect(sut.state == .idle)
+        #expect(sink.clipboard == "hola")
+        #expect(observed.withLock(\.self).count == 1)
+        #expect(store.all().isEmpty)
+        await never.open()
+    }
+
+    @Test
+    func a_failed_start_is_reported() async {
+        let recorder = FakeRecorder()
+        recorder.startError = URLError(.cannotCreateFile)
+        let sut = makeController(recorder: recorder, sink: Sink(), store: makeStore(), status: .init(initialState: 200))
+        await sut.voiceTapped()
+        #expect(sut.startFailed)
+        recorder.startError = nil
+        await sut.voiceTapped()
+        #expect(!sut.startFailed)
+        #expect(sut.state == .recording)
     }
 }
