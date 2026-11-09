@@ -37,7 +37,7 @@ public actor BuildStore {
     }
 
     private static func isValid(id: String) -> Bool {
-        guard id != ".", id != "..", !id.isEmpty else { return false }
+        guard id != ".", id != "..", !id.isEmpty, !id.hasSuffix(".partial") else { return false }
         return id.utf8.allSatisfy {
             ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A)
                 || $0 == 0x2E || $0 == 0x5F || $0 == 0x2D

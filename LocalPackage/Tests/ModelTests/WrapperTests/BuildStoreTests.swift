@@ -97,7 +97,7 @@ struct BuildStoreTests {
         try FileManager.default.createDirectory(at: sentinel, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: sentinel) }
         let store = BuildStore(root: root, fetch: { _ in Data("a".utf8) })
-        for id in ["../../\(sentinelName)", "a/b", "", ".", "..", "a\\b"] {
+        for id in ["../../\(sentinelName)", "a/b", "", ".", "..", "a\\b", "x.partial", ".partial"] {
             await #expect(throws: BuildStore.Failure.self) {
                 try await store.prepare(manifest(id, ["index.html": "a"]))
             }
@@ -179,5 +179,27 @@ struct BuildStoreTests {
         try await store.prepare(manifest("one", ["index.html": "a"]))
         let directory = try #require(await store.currentDirectory())
         #expect(try String(contentsOf: directory.appending(path: "index.html"), encoding: .utf8) == "a")
+    }
+
+    @Test
+    func a_failed_prepare_clears_in_flight_so_a_retry_succeeds() async throws {
+        let healthy = OSAllocatedUnfairLock<Bool>(initialState: false)
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let store = BuildStore(root: root, fetch: { _ in
+            try await Task.sleep(for: .milliseconds(100))
+            guard healthy.withLock(\.self) else { throw URLError(.notConnectedToInternet) }
+            return Data("a".utf8)
+        })
+        let m = manifest("one", ["index.html": "a"])
+        async let first: Void = store.prepare(m)
+        async let second: Void = store.prepare(m)
+        var failures = 0
+        do { try await first } catch { failures += 1 }
+        do { try await second } catch { failures += 1 }
+        #expect(failures == 2)
+        #expect(await store.isReady("one") == false)
+        healthy.withLock { $0 = true }
+        try await store.prepare(m)
+        #expect(await store.isReady("one"))
     }
 }
