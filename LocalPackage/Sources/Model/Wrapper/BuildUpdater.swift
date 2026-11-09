@@ -19,6 +19,8 @@ import Observation
     /// The build that was just applied and has not signalled ready yet.
     @ObservationIgnored private var awaitingReadyID: String?
     @ObservationIgnored private var isApplying = false
+    @ObservationIgnored private var isRollingBack = false
+    @ObservationIgnored private var confirmTask: Task<Void, Never>?
     @ObservationIgnored private var rejectedBuildID: String?
 
     public init(
@@ -34,10 +36,17 @@ import Observation
     }
 
     public func launch() async {
-        if let id = await store.pointer().current, let directory = await store.currentDirectory() {
+        let pointer = await store.pointer()
+        if let id = pointer.current, let directory = await store.currentDirectory() {
             activeBuildID = id
             location.current = directory
             loadNonce += 1
+            // The app may have been killed before this build ever loaded. With a confirmed build to
+            // return to, give it the same watchdog as a fresh apply. Without one (the very first
+            // build) there is nothing to roll back to, so just wait for the ready signal.
+            if let confirmed = pointer.confirmed, confirmed != id {
+                armWatchdog(for: id)
+            }
         }
         await check()
     }
@@ -65,22 +74,44 @@ import Observation
     }
 
     public func applyPending() async {
-        guard !isApplying, let id = pendingBuildID else { return }
+        guard !isApplying, !isRollingBack, let id = pendingBuildID else { return }
         isApplying = true
         defer { isApplying = false }
         pendingBuildID = nil
+        // Whatever is still waiting for its ready signal is replaced by this apply.
+        let waiting = awaitingReadyID
+        watchdogTask?.cancel()
+        watchdogTask = nil
+        awaitingReadyID = nil
+        // A confirmation of the current build must reach the store before activate reads it.
+        await confirmTask?.value
         do {
             try await switchTo(id)
             armWatchdog(for: id)
         } catch {
             rollbackMessage = "The new build could not be applied."
+            if let waiting { armWatchdog(for: waiting) }
         }
     }
 
-    public func pageReady() {
+    /// Called when the page of `buildID` has loaded. A signal from a build that is no longer
+    /// active (a page that outlived a switch) is ignored.
+    public func pageReady(buildID: String? = nil) {
+        guard !isRollingBack, let active = activeBuildID else { return }
+        if let buildID, buildID != active { return }
         awaitingReadyID = nil
         watchdogTask?.cancel()
         watchdogTask = nil
+        let previous = confirmTask
+        confirmTask = Task { [store] in
+            await previous?.value
+            try? await store.confirm(active)
+        }
+    }
+
+    /// Waits for pending confirmations to reach the store.
+    func settle() async {
+        await confirmTask?.value
     }
 
     private func switchTo(_ id: String) async throws {
@@ -101,12 +132,15 @@ import Observation
     }
 
     private func rollBack(from id: String) async {
-        // A ready signal or a newer apply may have landed between the timer and now.
-        guard awaitingReadyID == id, activeBuildID == id else { return }
+        // A ready signal, a newer apply or another rollback may have landed since the timer fired.
+        guard !isApplying, !isRollingBack, awaitingReadyID == id, activeBuildID == id else { return }
+        isRollingBack = true
+        defer { isRollingBack = false }
         awaitingReadyID = nil
         watchdogTask = nil
         guard let previous = try? await store.rollback() else { return }
         rejectedBuildID = id
+        if pendingBuildID == id { pendingBuildID = nil }
         activeBuildID = previous
         location.current = await store.currentDirectory()
         loadNonce += 1

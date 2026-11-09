@@ -14,6 +14,14 @@ public actor BuildStore {
     public struct Pointer: Codable, Equatable, Sendable {
         public var current: String?
         public var previous: String?
+        /// The last build that signalled ready. Rollback only ever returns to a confirmed build.
+        public var confirmed: String?
+
+        public init(current: String? = nil, previous: String? = nil, confirmed: String? = nil) {
+            self.current = current
+            self.previous = previous
+            self.confirmed = confirmed
+        }
     }
 
     private static let manifestName = ".manifest.json"
@@ -123,8 +131,18 @@ public actor BuildStore {
         try Self.validate(id)
         guard isReady(id) else { throw Failure.notReady(id) }
         let old = pointer()
-        try write(Pointer(current: id, previous: old.current == id ? old.previous : old.current))
+        // Rollback must land on a build that is known to load, never on one that was merely applied.
+        let previous = old.confirmed == id ? old.previous : old.confirmed
+        try write(Pointer(current: id, previous: previous, confirmed: old.confirmed))
         prune()
+    }
+
+    /// Marks the current build as having loaded successfully.
+    public func confirm(_ id: String) throws {
+        try Self.validate(id)
+        let old = pointer()
+        guard old.current == id, isReady(id) else { throw Failure.notReady(id) }
+        try write(Pointer(current: id, previous: old.previous == id ? nil : old.previous, confirmed: id))
     }
 
     /// Returns the build now current, or nil when there is nothing to return to.
@@ -133,7 +151,7 @@ public actor BuildStore {
         guard let previous = old.previous else { return nil }
         try Self.validate(previous)
         guard isReady(previous) else { return nil }
-        try write(Pointer(current: previous, previous: nil))
+        try write(Pointer(current: previous, previous: nil, confirmed: previous))
         return previous
     }
 
@@ -144,7 +162,7 @@ public actor BuildStore {
 
     private func prune() {
         let value = pointer()
-        let keep = Set([value.current, value.previous].compactMap(\.self))
+        let keep = Set([value.current, value.previous, value.confirmed].compactMap(\.self))
         for name in (try? files.contentsOfDirectory(atPath: builds.path)) ?? [] where !keep.contains(name) && !name.hasSuffix(".partial") {
             try? files.removeItem(at: builds.appending(path: name))
         }

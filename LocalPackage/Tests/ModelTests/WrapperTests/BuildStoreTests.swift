@@ -63,6 +63,7 @@ struct BuildStoreTests {
         let store = makeStore(["index.html": "a"])
         try await store.prepare(manifest("one", ["index.html": "a"]))
         try await store.activate("one")
+        try await store.confirm("one")
         try await store.prepare(manifest("two", ["index.html": "a"]))
         try await store.activate("two")
         #expect(try await store.rollback() == "one")
@@ -75,6 +76,7 @@ struct BuildStoreTests {
         for id in ["one", "two", "three"] {
             try await store.prepare(manifest(id, ["index.html": "a"]))
             try await store.activate(id)
+            try await store.confirm(id)
         }
         #expect(await store.isReady("one") == false)
         #expect(await store.isReady("two"))
@@ -201,5 +203,58 @@ struct BuildStoreTests {
         healthy.withLock { $0 = true }
         try await store.prepare(m)
         #expect(await store.isReady("one"))
+    }
+
+    @Test
+    func rollback_skips_builds_that_never_confirmed() async throws {
+        let store = makeStore(["index.html": "a"])
+        try await store.prepare(manifest("one", ["index.html": "a"]))
+        try await store.activate("one")
+        try await store.confirm("one")
+        for id in ["two", "three"] {
+            try await store.prepare(manifest(id, ["index.html": "a"]))
+            try await store.activate(id)
+        }
+        #expect(await store.pointer().previous == "one")
+        #expect(try await store.rollback() == "one")
+        #expect(await store.pointer().current == "one")
+    }
+
+    @Test
+    func confirm_only_accepts_the_current_build() async throws {
+        let store = makeStore(["index.html": "a"])
+        try await store.prepare(manifest("one", ["index.html": "a"]))
+        try await store.prepare(manifest("two", ["index.html": "a"]))
+        try await store.activate("one")
+        await #expect(throws: BuildStore.Failure.self) { try await store.confirm("two") }
+        try await store.confirm("one")
+        #expect(await store.pointer().confirmed == "one")
+    }
+
+    @Test
+    func prune_keeps_the_confirmed_build() async throws {
+        let store = makeStore(["index.html": "a"])
+        try await store.prepare(manifest("one", ["index.html": "a"]))
+        try await store.activate("one")
+        try await store.confirm("one")
+        for id in ["two", "three", "four"] {
+            try await store.prepare(manifest(id, ["index.html": "a"]))
+            try await store.activate(id)
+        }
+        #expect(await store.isReady("one"))
+        #expect(await store.isReady("four"))
+        #expect(await store.isReady("two") == false)
+    }
+
+    @Test
+    func a_pointer_file_without_confirmed_still_decodes() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data(#"{"current":"one","previous":"zero"}"#.utf8).write(to: root.appending(path: "current.json"))
+        let store = BuildStore(root: root, fetch: { _ in Data() })
+        let pointer = await store.pointer()
+        #expect(pointer.current == "one")
+        #expect(pointer.previous == "zero")
+        #expect(pointer.confirmed == nil)
     }
 }
