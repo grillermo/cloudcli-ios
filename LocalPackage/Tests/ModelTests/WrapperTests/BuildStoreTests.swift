@@ -88,4 +88,96 @@ struct BuildStoreTests {
             try await store.prepare(manifest("one", ["../evil": "a"]))
         }
     }
+
+    @Test
+    func malicious_build_ids_throw_and_touch_nothing_outside_builds() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let sentinelName = "sentinel-\(UUID().uuidString)"
+        let sentinel = root.deletingLastPathComponent().appending(path: sentinelName, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: sentinel, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: sentinel) }
+        let store = BuildStore(root: root, fetch: { _ in Data("a".utf8) })
+        for id in ["../../\(sentinelName)", "a/b", "", ".", "..", "a\\b"] {
+            await #expect(throws: BuildStore.Failure.self) {
+                try await store.prepare(manifest(id, ["index.html": "a"]))
+            }
+            await #expect(throws: BuildStore.Failure.self) {
+                try await store.activate(id)
+            }
+        }
+        #expect(FileManager.default.fileExists(atPath: sentinel.path))
+    }
+
+    @Test
+    func rollback_rejects_a_tampered_pointer() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data(#"{"current":"one","previous":"../x"}"#.utf8).write(to: root.appending(path: "current.json"))
+        let store = BuildStore(root: root, fetch: { _ in Data() })
+        await #expect(throws: BuildStore.Failure.self) { _ = try await store.rollback() }
+    }
+
+    @Test
+    func rollback_without_a_previous_build_returns_nil() async throws {
+        let store = makeStore(["index.html": "a"])
+        #expect(try await store.rollback() == nil)
+        try await store.prepare(manifest("one", ["index.html": "a"]))
+        try await store.activate("one")
+        #expect(try await store.rollback() == nil)
+    }
+
+    @Test
+    func unsafe_file_paths_are_rejected() async throws {
+        for path in ["", ".", "a/./b", "a\\b", "a\u{0}b", "/abs", "a/../b"] {
+            let store = makeStore([path: "a"])
+            await #expect(throws: BuildStore.Failure.self) {
+                try await store.prepare(manifest("one", [path: "a"]))
+            }
+        }
+    }
+
+    @Test
+    func prune_keeps_in_flight_partials_and_init_cleans_stale_ones() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let partial = root.appending(path: "builds/two.partial", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: partial, withIntermediateDirectories: true)
+        let fetch: BuildStore.Fetch = { _ in Data("a".utf8) }
+        let store = BuildStore(root: root, fetch: fetch)
+        // init removed the stale partial; recreate it as if a prepare were in flight.
+        #expect(!FileManager.default.fileExists(atPath: partial.path))
+        try await store.prepare(manifest("one", ["index.html": "a"]))
+        try FileManager.default.createDirectory(at: partial, withIntermediateDirectories: true)
+        try await store.activate("one")
+        #expect(FileManager.default.fileExists(atPath: partial.path))
+    }
+
+    @Test
+    func concurrent_prepares_of_the_same_id_leave_one_intact_build() async throws {
+        let fetched = OSAllocatedUnfairLock<[String]>(initialState: [])
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let store = BuildStore(root: root, fetch: { path in
+            fetched.withLock { $0.append(path) }
+            try await Task.sleep(for: .milliseconds(200))
+            return Data("a".utf8)
+        })
+        let m = manifest("one", ["index.html": "a", "b.js": "a"])
+        async let first: Void = store.prepare(m)
+        async let second: Void = store.prepare(m)
+        _ = try await (first, second)
+        #expect(await store.isReady("one"))
+        try await store.activate("one")
+        let directory = try #require(await store.currentDirectory())
+        #expect(try String(contentsOf: directory.appending(path: "b.js"), encoding: .utf8) == "a")
+        #expect(fetched.withLock(\.self).count == 2)
+    }
+
+    @Test
+    func preparing_the_current_build_again_keeps_it_usable() async throws {
+        let store = makeStore(["index.html": "a"])
+        try await store.prepare(manifest("one", ["index.html": "a"]))
+        try await store.activate("one")
+        try await store.prepare(manifest("one", ["index.html": "a"]))
+        let directory = try #require(await store.currentDirectory())
+        #expect(try String(contentsOf: directory.appending(path: "index.html"), encoding: .utf8) == "a")
+    }
 }

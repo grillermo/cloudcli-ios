@@ -8,6 +8,7 @@ public actor BuildStore {
         case hashMismatch(String)
         case unsafePath(String)
         case notReady(String)
+        case invalidBuildId(String)
     }
 
     public struct Pointer: Codable, Equatable, Sendable {
@@ -19,10 +20,32 @@ public actor BuildStore {
     private let root: URL
     private let fetch: Fetch
     private let files = FileManager.default
+    private var inFlight: [String: Task<Void, any Error>] = [:]
 
     public init(root: URL, fetch: @escaping Fetch) {
         self.root = root
         self.fetch = fetch
+        Self.removePartials(in: root.appending(path: "builds", directoryHint: .isDirectory))
+    }
+
+    /// Partial downloads left by a previous launch. Only called from init, before any prepare runs.
+    private static func removePartials(in builds: URL) {
+        let manager = FileManager.default
+        for name in (try? manager.contentsOfDirectory(atPath: builds.path)) ?? [] where name.hasSuffix(".partial") {
+            try? manager.removeItem(at: builds.appending(path: name))
+        }
+    }
+
+    private static func isValid(id: String) -> Bool {
+        guard id != ".", id != "..", !id.isEmpty else { return false }
+        return id.utf8.allSatisfy {
+            ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A)
+                || $0 == 0x2E || $0 == 0x5F || $0 == 0x2D
+        }
+    }
+
+    private static func validate(_ id: String) throws {
+        guard isValid(id: id) else { throw Failure.invalidBuildId(id) }
     }
 
     private var builds: URL { root.appending(path: "builds", directoryHint: .isDirectory) }
@@ -48,7 +71,19 @@ public actor BuildStore {
     }
 
     public func prepare(_ manifest: BuildManifest) async throws {
+        try Self.validate(manifest.buildId)
         guard !isReady(manifest.buildId) else { return }
+        if let running = inFlight[manifest.buildId] {
+            try await running.value
+            return
+        }
+        let task = Task { try await self.download(manifest) }
+        inFlight[manifest.buildId] = task
+        defer { inFlight[manifest.buildId] = nil }
+        try await task.value
+    }
+
+    private func download(_ manifest: BuildManifest) async throws {
         let partial = builds.appending(path: "\(manifest.buildId).partial", directoryHint: .isDirectory)
         try? files.removeItem(at: partial)
         try files.createDirectory(at: partial, withIntermediateDirectories: true)
@@ -71,6 +106,11 @@ public actor BuildStore {
                 try data.write(to: destination)
             }
             try JSONEncoder().encode(manifest).write(to: partial.appending(path: Self.manifestName))
+            if isReady(manifest.buildId) {
+                // Never replace a build that is already complete: it may be the current one.
+                try? files.removeItem(at: partial)
+                return
+            }
             try? files.removeItem(at: folder(manifest.buildId))
             try files.moveItem(at: partial, to: folder(manifest.buildId))
         } catch {
@@ -80,6 +120,7 @@ public actor BuildStore {
     }
 
     public func activate(_ id: String) throws {
+        try Self.validate(id)
         guard isReady(id) else { throw Failure.notReady(id) }
         let old = pointer()
         try write(Pointer(current: id, previous: old.current == id ? old.previous : old.current))
@@ -89,7 +130,9 @@ public actor BuildStore {
     /// Returns the build now current, or nil when there is nothing to return to.
     public func rollback() throws -> String? {
         let old = pointer()
-        guard let previous = old.previous, isReady(previous) else { return nil }
+        guard let previous = old.previous else { return nil }
+        try Self.validate(previous)
+        guard isReady(previous) else { return nil }
         try write(Pointer(current: previous, previous: nil))
         return previous
     }
@@ -102,7 +145,7 @@ public actor BuildStore {
     private func prune() {
         let value = pointer()
         let keep = Set([value.current, value.previous].compactMap(\.self))
-        for name in (try? files.contentsOfDirectory(atPath: builds.path)) ?? [] where !keep.contains(name) {
+        for name in (try? files.contentsOfDirectory(atPath: builds.path)) ?? [] where !keep.contains(name) && !name.hasSuffix(".partial") {
             try? files.removeItem(at: builds.appending(path: name))
         }
     }
@@ -121,7 +164,9 @@ public actor BuildStore {
     }
 
     private static func isSafe(_ path: String) -> Bool {
-        !path.hasPrefix("/") && !path.split(separator: "/").contains("..")
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"), !path.utf8.contains(0) else { return false }
+        return !path.split(separator: "/", omittingEmptySubsequences: false)
+            .contains { $0.isEmpty || $0 == "." || $0 == ".." }
     }
 
     private static func sha256(_ data: Data) -> String {
