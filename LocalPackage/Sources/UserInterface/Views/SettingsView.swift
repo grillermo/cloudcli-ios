@@ -5,6 +5,8 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.appDependencies) private var appDependencies
     @State var store: Settings
+    let services: AppServices
+    @State private var isPresentedDictationSettings = false
 
     var body: some View {
         NavigationStack(path: $store.path) {
@@ -26,6 +28,35 @@ struct SettingsView: View {
                             Image(systemName: "trash")
                         }
                     }
+                    Button {
+                        Task {
+                            await services.updater.check()
+                        }
+                    } label: {
+                        Label {
+                            Text(services.updater.isChecking ? "Checking…" : "Reload assets")
+                                .foregroundStyle(Color.primary)
+                        } icon: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(services.updater.isChecking)
+                    Button {
+                        isPresentedDictationSettings = true
+                    } label: {
+                        LabeledContent {
+                            Image(systemName: "chevron.right")
+                        } label: {
+                            Label {
+                                Text("Dictation")
+                                    .foregroundStyle(Color.primary)
+                            } icon: {
+                                Image(systemName: "mic")
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderless)
                 } header: {
                     Text("settings", bundle: .module)
                 }
@@ -108,6 +139,9 @@ struct SettingsView: View {
                 }
             }
         }
+        .sheet(isPresented: $isPresentedDictationSettings) {
+            MemaSettingsView(store: services.credentials)
+        }
         .task {
             await store.send(.task(String(describing: Self.self)))
         }
@@ -115,5 +149,8 @@ struct SettingsView: View {
 }
 
 #Preview {
-    SettingsView(store: .init(.testDependencies(), id: UUID(), action: { _ in }))
+    SettingsView(
+        store: .init(.testDependencies(), id: UUID(), action: { _ in }),
+        services: AppServices(webViewProxyClient: .testValue)
+    )
 }

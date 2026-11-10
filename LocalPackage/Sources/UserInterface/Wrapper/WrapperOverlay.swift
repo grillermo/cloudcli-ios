@@ -3,9 +3,7 @@ import SwiftUI
 
 struct WrapperOverlay: View {
     let services: AppServices
-    let isToolbarVisible: Bool
     @Environment(\.openURL) private var openURL
-    @State private var isPresentedSettings = false
 
     private var updater: BuildUpdater { services.updater }
     private var dictation: DictationController { services.dictation }
@@ -27,18 +25,12 @@ struct WrapperOverlay: View {
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
             }
-            if isToolbarVisible {
-                tools
-            }
             Spacer()
             HStack {
                 dictationControl
                 Spacer()
             }
             .padding(20)
-        }
-        .sheet(isPresented: $isPresentedSettings) {
-            MemaSettingsView(store: services.credentials)
         }
         .alert("Microphone access is off", isPresented: Binding(
             get: { dictation.permissionDenied },
@@ -66,16 +58,6 @@ struct WrapperOverlay: View {
         .tint(.white)
         .padding(10)
         .background(.red)
-    }
-
-    private var tools: some View {
-        HStack(spacing: 16) {
-            Button(updater.isChecking ? "Checking…" : "Reload assets") { Task { await updater.check() } }
-                .disabled(updater.isChecking)
-            Button("Dictation") { isPresentedSettings = true }
-        }
-        .font(.footnote)
-        .buttonStyle(.bordered)
     }
 
     @ViewBuilder

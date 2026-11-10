@@ -120,10 +120,10 @@ struct BrowserView: View {
         .ignoresSafeArea(.container, edges: store.isPresentedToolbar || browserToolbarLayout.usesSystemToolbar ? [] : .all)
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .overlay {
-            WrapperOverlay(services: services, isToolbarVisible: store.isPresentedToolbar)
+            WrapperOverlay(services: services)
         }
         .sheet(item: $store.settings) { store in
-            SettingsView(store: store)
+            SettingsView(store: store, services: services)
         }
         .webDialog(
             isPresented: $store.isPresentedWebDialog,
