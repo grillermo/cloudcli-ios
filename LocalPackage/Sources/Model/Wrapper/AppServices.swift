@@ -30,6 +30,7 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
     public let updater: BuildUpdater
     public let dictation: DictationController
     public let credentials = MemaCredentialStore()
+    public let memaLinks: MemaLinkImport
     public let webViewConfiguration: WKWebViewConfiguration
 
     /// One instance per process: it owns the build store, the recorder and the web view configuration.
@@ -47,6 +48,7 @@ private final class ScriptBridge: NSObject, WKScriptMessageHandler {
         self.updater = updater
 
         let credentialStore = credentials
+        memaLinks = MemaLinkImport(save: { credentialStore.save($0) })
         dictation = DictationController(
             recorder: DictationRecorder(),
             store: PendingRecordingStore(root: support.appending(path: "Recordings")),
