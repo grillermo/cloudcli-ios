@@ -1,0 +1,377 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# deploy
+#
+# One-shot release of CloudCLI over Safari OTA install:
+#
+#   1. bump MARKETING_VERSION (+ build number) in project.pbxproj
+#   2. build an ad-hoc-signed .ipa + its OTA manifest   (scripts/deploy/ipa_builder.rb)
+#   3. publish the .ipa, icon, manifest and install page to CLOUDCLI_UPLOAD_BASE
+#   4. commit the bump, tag, and push
+#
+# The install page URL never changes, so a Home Screen bookmark on the device
+# always installs the newest release. It is printed at the end.
+#
+# Usage:
+#   ./deploy                  # bump patch (1.0.0 -> 1.0.1)
+#   ./deploy patch|minor|major
+#   ./deploy 1.1.0            # set an explicit version
+#   ./deploy --yes            # skip the confirmation prompt
+#   ./deploy --devlog         # instrumented build: DevLog -> scripts/devlog/server.py
+#
+# Release notes (shown on the install page):
+#
+#   ./deploy minor --summary "Faster sync" \
+#            --note "Retries back off 2/5/10s"
+#
+# --summary is a one-line headline, --note is repeatable and becomes a bullet.
+# With neither, the notes come from commit subjects since the last release tag.
+#
+# Setup (both files gitignored):
+#   .env                    CLOUDCLI_UPLOAD_BASE=https://files.chiq.me
+#                           optional: CLOUDCLI_PUBLISH_DIR, CLOUDCLI_TEAM_ID, CLOUDCLI_DEVLOG_URL
+#   Config/Local.xcconfig   DEVELOPMENT_TEAM and CLOUDCLI_BUNDLE_ID, overriding the
+#                           committed defaults in Config/CloudCLI.xcconfig
+#
+# The file_server service behind CLOUDCLI_UPLOAD_BASE runs on the macmini, so
+# releases are published by writing into the files/ directory it serves rather
+# than over HTTP (see scripts/deploy/uploader.rb). Run this on the macmini.
+#
+# CLOUDCLI_UNSIGNED=1 builds an unsigned Payload/ zip instead, for when signing is
+# broken and you still need a binary.
+
+require_relative "scripts/deploy/ipa_builder"
+require_relative "scripts/deploy/uploader"
+require "digest"
+require "fileutils"
+require "shellwords"
+require "time"
+
+B = IpaBuilder
+
+APP_NAME    = B::APP_NAME
+SLUG        = B::APP_SLUG
+REPO_ROOT   = B::REPO_ROOT
+PBXPROJ_REL = File.join(B::PROJECT, "project.pbxproj")
+PBXPROJ     = File.join(REPO_ROOT, PBXPROJ_REL)
+REMOTE      = B::GIT_REMOTE
+
+# --- .env ----------------------------------------------------------------
+# Minimal dotenv: load KEY=VALUE lines from .env without overriding a
+# variable already exported in the shell.
+def load_dotenv(path)
+  return unless File.exist?(path)
+
+  File.readlines(path).each do |line|
+    line = line.strip
+    next if line.empty? || line.start_with?("#")
+
+    key, value = line.split("=", 2)
+    next unless key && value
+
+    ENV[key] ||= value.strip.gsub(/\A["']|["']\z/, "")
+  end
+end
+
+load_dotenv(File.join(REPO_ROOT, ".env"))
+
+BUNDLE_ID = B.bundle_id
+
+PINNED_MANIFEST = "#{SLUG}-manifest.plist"
+PINNED_INSTALL  = "#{SLUG}-install.html"
+PINNED_ICON     = "#{SLUG}-icon.png"
+ICON_SOURCE     = File.join(REPO_ROOT, B::ICON_SOURCE)
+
+MANIFEST_URL = "#{Uploader.base_url}/files/#{PINNED_MANIFEST}"
+INSTALL_URL  = "#{Uploader.base_url}/files/#{PINNED_INSTALL}"
+ICON_URL     = "#{Uploader.base_url}/files/#{PINNED_ICON}"
+ITMS_URL     = "itms-services://?action=download-manifest&url=#{MANIFEST_URL}"
+
+# --- flags -----------------------------------------------------------------
+
+ASSUME_YES = !ARGV.delete("--yes").nil?
+# --devlog builds an instrumented release whose DevLog records go to
+# scripts/devlog/server.py on this machine (CLOUDCLI_DEVLOG_URL overrides).
+DEVLOG = !ARGV.delete("--devlog").nil?
+
+# Repeatable "--flag value" / "--flag=value" options, pulled out of ARGV so the
+# version argument stays positional wherever it sits.
+def take_option(argv, *names)
+  values = []
+  i = 0
+  while i < argv.length
+    arg = argv[i]
+    if names.include?(arg)
+      value = argv[i + 1]
+      B.die("#{arg} needs a value") if value.nil? || value.start_with?("--")
+      values << value
+      argv.slice!(i, 2)
+    elsif (eq = arg.match(/\A(--[a-z-]+)=(.*)\z/m)) && names.include?(eq[1])
+      values << eq[2]
+      argv.slice!(i, 1)
+    else
+      i += 1
+    end
+  end
+  values
+end
+
+SUMMARY = take_option(ARGV, "--summary", "-s").last
+NOTES   = take_option(ARGV, "--note", "--notes", "-n")
+          .flat_map { |n| n.split("\n") }
+          .map { |n| n.strip.sub(/\A[-*•]\s*/, "") }
+          .reject(&:empty?)
+
+# --- preflight ---------------------------------------------------------------
+
+if DEVLOG && !File.exist?(File.join(REPO_ROOT, "scripts/devlog/server.py"))
+  B.die("--devlog needs DevLog in the app and scripts/devlog/server.py; this app has neither yet")
+end
+
+Uploader.check_publish_dir! # dies early if the service's files/ dir is missing
+B.ensure_codesign_can_sign! # unlocks the keychain now, not after a long compile
+B.die("icon not found: #{ICON_SOURCE} (set ICON_SOURCE in scripts/deploy/ipa_builder.rb)") unless File.file?(ICON_SOURCE)
+
+BRANCH = `git -C #{REPO_ROOT.shellescape} rev-parse --abbrev-ref HEAD`.strip
+B.die("on branch '#{BRANCH}', not 'main'; releases are cut from main") unless BRANCH == "main"
+
+dirty = `git -C #{REPO_ROOT.shellescape} status --porcelain`
+B.die("working tree is dirty -- commit or stash before releasing:\n#{dirty}") unless dirty.strip.empty?
+
+# --- version bump ------------------------------------------------------------
+
+def bump(current, arg)
+  return arg if arg =~ /\A\d+\.\d+(\.\d+)?\z/
+
+  major, minor, patch = current.split(".").map(&:to_i)
+  patch ||= 0
+  case arg
+  when "major" then "#{major + 1}.0.0"
+  when "minor" then "#{major}.#{minor + 1}.0"
+  when "patch", nil then "#{major}.#{minor}.#{patch + 1}"
+  else B.die("bad argument '#{arg}' (use patch|minor|major or an X.Y[.Z] version)")
+  end
+end
+
+current = B.marketing_version
+version = bump(current, ARGV[0])
+tag     = "#{SLUG}-ota-v#{version}"
+asset   = "#{APP_NAME}-#{version}.ipa"
+
+# The .ipa name carries the version, so this URL is both predictable before the
+# build (ipa_builder needs it) and unique per release (pinning never clobbers a
+# past one). This tag check is what guards against re-releasing a version.
+download = "#{Uploader.base_url}/files/#{asset}"
+
+existing_tag = `git -C #{REPO_ROOT.shellescape} tag -l #{tag.shellescape}`.strip
+B.die("tag #{tag} already exists -- bump to a new version") if existing_tag == tag
+
+# --- release notes -----------------------------------------------------------
+
+NOTE_NOISE = /\A(Release .*OTA |Merge |Commit pending changes|Bump |wip\b)/i
+
+def notes_from_git
+  last = `git -C #{REPO_ROOT.shellescape} describe --tags --abbrev=0 --match '#{SLUG}-ota-v*' 2>/dev/null`.strip
+  range = last.empty? ? "HEAD -n 20" : "#{last}..HEAD"
+  subjects = `git -C #{REPO_ROOT.shellescape} log --no-merges --pretty=%s #{range}`.lines.map(&:strip)
+  subjects.reject { |s| s.empty? || s =~ NOTE_NOISE }.uniq.first(8)
+end
+
+def release_notes(version)
+  bullets  = NOTES.empty? ? notes_from_git : NOTES
+  headline = SUMMARY || (bullets.empty? ? "Release #{version}." : "What's new in #{version}:")
+  lines = [headline]
+  lines << "" unless bullets.empty?
+  lines.concat(bullets.map { |b| "• #{b}" })
+  lines.join("\n")
+end
+
+DESCRIPTION = release_notes(version)
+
+build = B.current_project_version.to_i + 1
+
+puts B.bold("\n==> Releasing #{APP_NAME} (OTA) #{current} -> #{version} (build #{build})")
+puts B.bold("\n    What's New:")
+puts DESCRIPTION.lines.map { |l| "      #{l}" }.join
+puts "\n    Install page: #{INSTALL_URL}"
+
+unless ASSUME_YES
+  print "\n    Continue? [y/N] "
+  B.die("aborted") unless $stdin.gets.to_s.strip.downcase.start_with?("y")
+end
+
+# --- write the bump ----------------------------------------------------------
+#
+# Nothing above this line touches the working tree, so an abort at the prompt
+# leaves nothing behind. From here on the tree is modified, and a run that dies
+# before the commit must put it back exactly as it was: a leftover bump is
+# invisible in this run's output but fails the *next* run's dirty-tree
+# preflight with an error pointing nowhere near the run that caused it.
+#
+# B.die exits, so at_exit is the one hook that covers every way out -- a failed
+# build, a failed upload, an uncaught exception, or Ctrl-C.
+
+MUTATED_FILES = [PBXPROJ].freeze
+
+originals = MUTATED_FILES.to_h { |p| [p, File.exist?(p) ? File.read(p) : nil] }
+committed = false
+
+at_exit do
+  next if committed
+
+  originals.each do |file, content|
+    content.nil? ? FileUtils.rm_f(file) : File.write(file, content)
+  end
+end
+
+pbx = File.read(PBXPROJ)
+pbx = pbx.gsub(/^(\s*MARKETING_VERSION\s*=\s*)[\d.]+;/, "\\1#{version};")
+pbx = pbx.gsub(/^(\s*CURRENT_PROJECT_VERSION\s*=\s*)\d+;/, "\\1#{build};")
+File.write(PBXPROJ, pbx)
+
+# --- build -------------------------------------------------------------------
+
+devlog_url = if DEVLOG
+  B.env("DEVLOG_URL") || "http://#{`scutil --get LocalHostName`.strip}.local:19480/api/devlog"
+end
+puts "    DevLog: #{devlog_url}" if devlog_url
+ipa = B.build(manifest: { app_url: download, icon_url: ICON_URL }, ota_manifest_url: MANIFEST_URL, devlog_url: devlog_url)
+built_manifest = File.join(File.dirname(ipa), "manifest.plist")
+
+size   = File.size(ipa)
+sha256 = Digest::SHA256.file(ipa).hexdigest
+puts B.green("    #{asset} — #{(size / 1_048_576.0).round(1)} MB  sha256:#{sha256[0, 12]}…")
+
+B.die("export produced no manifest.plist -- cannot publish the OTA route") unless File.exist?(built_manifest)
+
+# --- publish -----------------------------------------------------------------
+#
+# Order matters. The manifest points at the .ipa and the install page points at
+# the manifest, so each must exist before the thing that references it -- a
+# manifest published ahead of its binary points at a 404.
+
+B.step "Publishing the .ipa"
+puts "    #{Uploader.upload(ipa, name: asset)}"
+
+B.step "Publishing the icon"
+puts "    #{Uploader.upload(ICON_SOURCE, name: PINNED_ICON)}"
+
+B.step "Publishing the OTA manifest"
+puts "    #{Uploader.upload(built_manifest, name: PINNED_MANIFEST)}"
+
+def h(str)
+  str.to_s.gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;").gsub('"', "&quot;")
+end
+
+install_page = <<~HTML
+  <!doctype html>
+  <html lang="en">
+  <head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Install #{h(APP_NAME)}</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; padding: 2.5rem 1.25rem 4rem;
+      background: #111; color: #f2f2f2;
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      display: flex; flex-direction: column; align-items: center;
+    }
+    main { width: 100%; max-width: 26rem; }
+    img.icon { width: 88px; height: 88px; border-radius: 20px; display: block; margin: 0 auto 1.25rem; }
+    h1 { font-size: 1.6rem; margin: 0 0 .25rem; text-align: center; }
+    .version { text-align: center; color: #9a9a9a; margin: 0 0 2rem; font-size: .95rem; }
+    a.install {
+      display: block; background: #1E88E5; color: #fff; text-decoration: none;
+      font-weight: 600; font-size: 1.05rem; text-align: center;
+      padding: 1rem; border-radius: 14px; margin-bottom: 1.5rem;
+    }
+    a.install:active { background: #1667b0; }
+    section { border-top: 1px solid #2a2a2a; padding-top: 1.25rem; margin-top: 1.25rem; }
+    h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: #8a8a8a; margin: 0 0 .6rem; }
+    pre.notes { white-space: pre-wrap; margin: 0; font: inherit; color: #d8d8d8; }
+    p { color: #b0b0b0; font-size: .9rem; }
+    code { background: #1c1c1c; padding: .15em .4em; border-radius: 5px; font-size: .85em; word-break: break-all; }
+  </style>
+  </head>
+  <body>
+  <main>
+    <img class="icon" src="#{h(ICON_URL)}" alt="">
+    <h1>#{h(APP_NAME)}</h1>
+    <p class="version">Version #{h(version)} (build #{h(build)})</p>
+
+    <a class="install" href="#{h(ITMS_URL)}">Install #{h(APP_NAME)}</a>
+
+    <p>Open this page in <strong>Safari</strong> — other browsers cannot start an
+    install. Then confirm on the Home Screen prompt.</p>
+
+    <section>
+      <h2>What&rsquo;s new</h2>
+      <pre class="notes">#{h(DESCRIPTION)}</pre>
+    </section>
+
+    <section>
+      <h2>Updating later</h2>
+      <p>Add this page to your Home Screen (Share &rarr; Add to Home Screen). The
+      Install button always installs the newest release, so one tap updates the
+      app in place.</p>
+    </section>
+
+    <section>
+      <h2>Requirements</h2>
+      <p>Your device must be registered on the developer account before a build
+      is made. A device added afterwards needs a fresh <code>./deploy</code>
+      before it can install.</p>
+      <p>Bundle ID: <code>#{h(BUNDLE_ID)}</code></p>
+    </section>
+  </main>
+  </body>
+  </html>
+HTML
+
+B.step "Publishing the install page"
+page = File.join(File.dirname(ipa), PINNED_INSTALL)
+File.write(page, install_page)
+puts "    #{Uploader.upload(page, name: PINNED_INSTALL)}"
+
+FileUtils.remove_entry(File.dirname(ipa))
+
+# --- commit ------------------------------------------------------------------
+
+B.step "Committing + pushing"
+B.run("git add #{PBXPROJ_REL.shellescape}", chdir: REPO_ROOT)
+B.run("git commit -m #{"Release #{APP_NAME} OTA #{tag}".shellescape}", chdir: REPO_ROOT)
+# The bump lives in a commit now; the at_exit restore must not undo it.
+committed = true
+
+# Annotated, because with tag.gpgsign set a lightweight `git tag` asks for a
+# message and fails without a terminal.
+B.run("git tag -a #{tag.shellescape} -m #{"#{APP_NAME} OTA #{version}".shellescape}", chdir: REPO_ROOT)
+
+# git-sync may push the commit before we do, which makes our push fail with
+# nothing left to push. That still counts: what matters is that the remote has
+# our HEAD.
+def push_branch(branch, chdir:)
+  cmd = "git push #{REMOTE} #{branch.shellescape} --tags"
+  puts "    $ #{cmd}"
+  return if system(cmd, chdir: chdir)
+
+  local  = `git -C #{chdir.shellescape} rev-parse HEAD`.strip
+  remote = `git -C #{chdir.shellescape} ls-remote #{REMOTE} refs/heads/#{branch}`.split.first.to_s
+  unless !local.empty? && local == remote
+    B.die("command failed: #{cmd} (remote is at #{remote.empty? ? "nothing" : remote[0, 7]}, " \
+          "we are at #{local[0, 7]})")
+  end
+
+  puts B.green("    remote already at #{local[0, 7]} — pushed already; continuing")
+end
+
+push_branch(BRANCH, chdir: REPO_ROOT)
+
+puts B.green("\n✓ Published #{APP_NAME} OTA #{version}")
+puts B.bold("\n    Install from Safari on the device:")
+puts B.bold("    #{INSTALL_URL}")
+puts "    Manifest: #{MANIFEST_URL}"
+puts "\n    Add it to the Home Screen once; it always installs the newest release."
