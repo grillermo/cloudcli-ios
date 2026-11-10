@@ -15,6 +15,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>CloudCLIOTAManifestURL</key>
+	<string>$(CLOUDCLI_OTA_MANIFEST_URL)</string>
 	<key>CFBundleDisplayName</key>
 	<string>CloudCLI</string>
 	<key>NSMicrophoneUsageDescription</key>

@@ -82,6 +82,34 @@ https://apps.apple.com/us/app/telescopure/id1643406104
     └── TelescopureUITests.swift
 ```
 
+## Deploy (OTA to the phone)
+
+`./deploy` bumps the version, builds an ad hoc signed `.ipa`, publishes it to files.chiq.me and
+leaves an install page whose URL never changes. Run it on the macmini (it publishes by copying
+into `~/c/file_server/files/`).
+
+```bash
+./deploy                  # bump patch
+./deploy patch|minor|major
+./deploy 2.7.0            # explicit version
+./deploy --yes            # skip the confirmation prompt
+./deploy minor --summary "Headline" --note "A bullet"   # release notes (else from commit subjects)
+```
+
+Install page: `https://files.chiq.me/files/cloudcli-install.html`. Builds made by `./deploy` also get
+an "Install Latest" Home Screen quick action. The release tag is `cloudcli-ota-vX.Y.Z`.
+
+Setup (both files are gitignored):
+
+- `.env` holds `CLOUDCLI_UPLOAD_BASE=https://files.chiq.me`. Optional: `CLOUDCLI_PUBLISH_DIR`,
+  `CLOUDCLI_TEAM_ID`.
+- `Config/Local.xcconfig` holds `DEVELOPMENT_TEAM` and `CLOUDCLI_BUNDLE_ID`, overriding the
+  committed defaults in `Config/CloudCLI.xcconfig`.
+
+`CLOUDCLI_UNSIGNED=1 ./deploy` builds an unsigned archive. Both bundle IDs (`me.chiq.cloudcli` and the
+share extension `me.chiq.cloudcli.share`) must exist as App IDs on the developer portal, and the
+phone's UDID must be registered before the build.
+
 ## Default Browser
 
 Telescopure can be set as default browser app.

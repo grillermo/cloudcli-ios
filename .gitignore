@@ -16,3 +16,7 @@ xcuserdata/
 
 # Test
 TestResults/
+
+# Deploy
+.env
+Config/Local.xcconfig

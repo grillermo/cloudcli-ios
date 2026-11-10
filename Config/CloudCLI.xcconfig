@@ -1,0 +1,5 @@
+// Committed defaults. Personal values (team, bundle ID) go in Config/Local.xcconfig,
+// which is gitignored; a fresh clone builds with the defaults below.
+CLOUDCLI_BUNDLE_ID = me.chiq.cloudcli
+
+#include? "Local.xcconfig"
