@@ -253,6 +253,7 @@ module IpaBuilder
       "#{ota}" \
       "#{devlog}" \
       "-allowProvisioningUpdates " \
+      "-skipPackagePluginValidation " \
       "archive",
       chdir: REPO_ROOT
     )
