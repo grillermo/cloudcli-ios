@@ -21,9 +21,9 @@ require "fileutils"
 require_relative "ipa_builder"
 
 module Uploader
-  # file_server is checked out beside this repo (~/c/file_server) and serves its
-  # own files/ dir.
-  DEFAULT_PUBLISH_DIR = File.expand_path("../file_server/files", IpaBuilder::REPO_ROOT)
+  # file_server lives at ~/c/file_server and serves its own files/ dir. (This repo
+  # sits one level deeper, in ~/c/third-parties, so it is not "beside" it.)
+  DEFAULT_PUBLISH_DIR = File.expand_path("~/c/file_server/files")
 
   module_function
 
