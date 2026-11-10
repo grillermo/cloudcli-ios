@@ -12,6 +12,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>cloudcli</string>
+				<string>fonos</string>
 			</array>
 		</dict>
 	</array>

@@ -149,3 +149,13 @@ https://cybozu.github.io/webview-debugger/index.html
 | Device Location      | Privacy - Location When In Use Usage Description (`NSLocationWhenInUseUsageDescription`)  |
 | Camera               | Privacy - Camera Usage Description (`NSCameraUsageDescription`)                           |
 | Microphone           | Privacy - Microphone Usage Description (`NSMicrophoneUsageDescription`)                   |
+
+## Configure dictation with a link
+
+Open a `fonos://` or `cloudcli://` link with host `model` (the same link the macOS fonos app uses) to set the dictation (mema) server. The app asks "Use <name> for dictation?" and shows the server host; nothing is saved until you tap Save.
+
+```
+fonos://model?name=mema-qwen&base_url=http://192.168.1.3:8787&model=qwen&api_key=0923093FAKEKEY
+```
+
+`base_url` and `api_key` are required (percent-encoded values are decoded); `name` is shown in the prompt and `model` is ignored.

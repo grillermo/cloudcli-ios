@@ -144,6 +144,8 @@ struct BrowserView: View {
             actions: {}
         )
         .onOpenURL { url in
+            // Credentials links are confirmed with the user and never reach the web view.
+            if services.memaLinks.handle(url) { return }
             if services.updater.loadNonce == 0 {
                 pendingOpenURL = url
                 return
@@ -151,6 +153,23 @@ struct BrowserView: View {
             Task {
                 await store.send(.onOpenURL(url))
             }
+        }
+        .alert(
+            services.memaLinks.confirmationTitle,
+            isPresented: Bindable(services.memaLinks).isPresentedConfirmation
+        ) {
+            Button("Cancel", role: .cancel) { services.memaLinks.cancel() }
+            Button("Save") { services.memaLinks.confirm() }
+        } message: {
+            Text(services.memaLinks.confirmationMessage)
+        }
+        .alert(
+            "Dictation link",
+            isPresented: Bindable(services.memaLinks).isPresentedError
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(services.memaLinks.errorMessage ?? "")
         }
         .animation(.easeIn(duration: 0.2), value: store.isPresentedToolbar)
     }
