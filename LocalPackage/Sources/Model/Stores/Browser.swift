@@ -101,6 +101,9 @@ import WebUI
 
         case let .onChangeURL(url):
             currentURL = url
+            if let url, Self.isRestorable(url) {
+                userDefaultsRepository.lastURL = url
+            }
             if let urlString = url?.absoluteString.removingPercentEncoding {
                 inputText = urlString
             }
@@ -266,6 +269,20 @@ import WebUI
 
         case .settings:
             break
+        }
+    }
+
+    /// Where the first load after launch goes: the last page shown, or the app root.
+    public var launchURL: URL {
+        guard let url = userDefaultsRepository.lastURL, Self.isRestorable(url) else { return AppScheme.root }
+        return url
+    }
+
+    static func isRestorable(_ url: URL) -> Bool {
+        switch url.scheme {
+        case AppScheme.scheme: url.host() == AppScheme.host
+        case "http", "https": true
+        default: false
         }
     }
 

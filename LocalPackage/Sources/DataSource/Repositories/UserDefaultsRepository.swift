@@ -14,6 +14,14 @@ public struct UserDefaultsRepository: Sendable {
 #endif
     }
 
+    /// The last page the web view showed, so a relaunch can return to it.
+    public var lastURL: URL? {
+        get { userDefaultsClient.string(Self.lastURLKey).flatMap { URL(string: $0) } }
+        nonmutating set { userDefaultsClient.setString(newValue?.absoluteString, Self.lastURLKey) }
+    }
+
+    static let lastURLKey = "lastURL"
+
     private func showAllData() {
         guard let dict = userDefaultsClient.persistentDomain(Bundle.main.bundleIdentifier!) else {
             return

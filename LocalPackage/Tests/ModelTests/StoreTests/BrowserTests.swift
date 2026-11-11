@@ -16,6 +16,52 @@ struct BrowserTests {
     }
 
     @MainActor @Test
+    func send_onChangeURL_saves_last_url() async {
+        let saved = OSAllocatedUnfairLock<[String: String?]>(initialState: [:])
+        let sut = Browser(.testDependencies(
+            userDefaultsClient: testDependency(of: UserDefaultsClient.self) {
+                $0.setString = { value, key in saved.withLock { $0[key] = value } }
+            }
+        ))
+        await sut.send(.onChangeURL(URL(string: "cloudcli://app/session/abc")))
+        #expect(saved.withLock(\.self)["lastURL"] == "cloudcli://app/session/abc")
+    }
+
+    @MainActor @Test
+    func send_onChangeURL_ignores_unrestorable_url() async {
+        let saved = OSAllocatedUnfairLock<[String: String?]>(initialState: [:])
+        let sut = Browser(.testDependencies(
+            userDefaultsClient: testDependency(of: UserDefaultsClient.self) {
+                $0.setString = { value, key in saved.withLock { $0[key] = value } }
+            }
+        ))
+        await sut.send(.onChangeURL(URL(string: "about:blank")))
+        await sut.send(.onChangeURL(nil))
+        #expect(saved.withLock(\.self).isEmpty)
+    }
+
+    @MainActor @Test
+    func launchURL_returns_saved_url() {
+        let sut = Browser(.testDependencies(
+            userDefaultsClient: testDependency(of: UserDefaultsClient.self) {
+                $0.string = { $0 == "lastURL" ? "cloudcli://app/session/abc" : nil }
+            }
+        ))
+        #expect(sut.launchURL == URL(string: "cloudcli://app/session/abc")!)
+    }
+
+    @MainActor @Test
+    func launchURL_falls_back_to_root() {
+        #expect(Browser(.testDependencies()).launchURL == AppScheme.root)
+        let sut = Browser(.testDependencies(
+            userDefaultsClient: testDependency(of: UserDefaultsClient.self) {
+                $0.string = { _ in "cloudcli://other/x" }
+            }
+        ))
+        #expect(sut.launchURL == AppScheme.root)
+    }
+
+    @MainActor @Test
     func send_onChangeTitle() async {
         let sut = Browser(.testDependencies())
         await sut.send(.onChangeTitle("Example"))

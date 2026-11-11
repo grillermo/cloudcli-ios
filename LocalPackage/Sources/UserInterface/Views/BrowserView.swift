@@ -90,8 +90,11 @@ struct BrowserView: View {
                         await store.send(.onChangeURL(newValue))
                     }
                 }
-                .onChange(of: services.updater.loadNonce) { _, _ in
-                    proxy.load(request: URLRequest(url: AppScheme.root))
+                .onChange(of: services.updater.loadNonce) { oldNonce, _ in
+                    // The first load after launch returns to the last page shown, unless a
+                    // tapped link is about to replace it. Later loads (new build) start at root.
+                    let isLaunch = oldNonce == 0 && pendingOpenURL == nil
+                    proxy.load(request: URLRequest(url: isLaunch ? store.launchURL : AppScheme.root))
                     if let url = pendingOpenURL {
                         pendingOpenURL = nil
                         Task { await store.send(.onOpenURL(url)) }
